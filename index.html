@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사진 가림 편집기</title>
+<style>
+  :root{
+    --bg:#eceeea; --panel:#ffffff; --line:#dfe3dd; --ink:#2b332f;
+    --muted:#7d8781; --accent:#2f6f5e; --accent-s:#e4efe9;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+    background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased;}
+  button{font-family:inherit; cursor:pointer; border:1px solid transparent; background:#f4f6f3;
+    color:var(--ink); border-radius:8px; font-size:13px;}
+  button:hover{filter:brightness(0.97);}
+  input[type=number],input[type=text]{font-family:inherit; border:1px solid var(--line);
+    border-radius:6px; padding:4px 6px; font-size:13px; color:var(--ink);}
+  .hidden{display:none !important;}
+
+  #app{height:100%; display:flex; flex-direction:column;}
+  header{display:flex; align-items:center; padding:14px 18px 0; flex-shrink:0;}
+  header h1{font-size:17px; margin:0; font-weight:700;}
+  header .fname{color:var(--muted); font-size:12px; margin-left:14px;}
+  header .spacer{flex:1;}
+  .btn-primary{background:var(--accent); color:#fff; font-weight:700;}
+  .btn-primary:hover{background:#27604f;}
+  .btn-accent{background:var(--accent-s); color:var(--accent); font-weight:700;}
+
+  main{flex:1; display:flex; gap:14px; padding:14px 18px 18px; min-height:0;}
+  #side{width:312px; flex-shrink:0; background:var(--panel); border:1px solid var(--line);
+    border-radius:4px; overflow-y:auto;}
+  #side .section-label{color:var(--muted); font-size:12px; padding:16px 18px 6px; display:block;}
+  #side .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:0 14px;}
+  #side .row3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding:0 14px;}
+  .tool-btn,.act-btn{padding:9px 10px; text-align:left; display:flex; align-items:center; gap:6px;}
+  .eff-btn{padding:8px 0; text-align:center;}
+  .tool-btn.active,.eff-btn.active{background:var(--accent-s); color:var(--accent); font-weight:700;}
+  .icon{width:15px; height:15px; flex-shrink:0;}
+  #openBtn{width:calc(100% - 36px); margin:18px 18px 4px; font-weight:700; padding:11px 0;}
+  .hint{color:var(--muted); font-size:11px; padding:0 18px; margin:0;}
+  #strengthBox{padding:14px 18px 0;}
+  #strengthBox label{font-size:12px; display:block; margin-bottom:4px;}
+  #strengthBox input[type=range]{width:100%; accent-color:var(--accent);}
+  #applyAllBtn{width:100%; margin-top:8px; padding:6px 0; font-size:11px;}
+  #autoBtn{width:calc(100% - 36px); margin:0 18px; padding:11px 0;}
+  #autoNote{color:var(--muted); font-size:10px; padding:0 18px; margin-top:6px;}
+  #saveBtn{width:calc(100% - 36px); margin:22px 18px 6px; padding:13px 0;}
+  #saveNote{color:var(--muted); font-size:10px; padding:0 18px 16px; line-height:1.5;}
+
+  #stage{flex:1; background:var(--panel); border:1px solid var(--line); border-radius:4px;
+    display:flex; flex-direction:column; min-width:0;}
+  #toolbar{height:44px; display:flex; align-items:center; padding:0 12px; flex-shrink:0;}
+  #status{color:var(--muted); font-size:12px; padding:0 4px;}
+  #toolbar .spacer{flex:1;}
+  #toolbar button{padding:6px 10px; margin-left:6px;}
+  #zoomLabel{font-size:12px; width:46px; text-align:center; display:inline-block;}
+
+  #canvasWrap{flex:1; position:relative; overflow:hidden; background:#f6f7f4; min-height:0;}
+  #view{position:absolute; top:0; left:0; cursor:crosshair;}
+  #placeholder{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#9aa39d; font-size:13px; pointer-events:none;}
+
+  .modal-backdrop{position:fixed; inset:0; background:rgba(30,35,32,0.35);
+    display:flex; align-items:center; justify-content:center; z-index:50;}
+  .modal{background:var(--panel); border-radius:10px; width:340px; padding:20px;}
+  .modal h3{margin:0 0 12px; font-size:15px;}
+  .modal label.radio{display:flex; align-items:center; gap:8px; font-size:13px; margin:6px 0; cursor:pointer;}
+  .size-row{display:flex; align-items:center; gap:8px; margin:10px 0 4px;}
+  .size-row input{width:70px; text-align:right;}
+  .modal .tip{color:var(--muted); font-size:11px; line-height:1.5; margin:10px 0 16px;}
+  .modal .btns{display:flex; justify-content:flex-end; gap:8px;}
+  .modal .btns button{padding:9px 16px;}
+  #toast{position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:9px 16px; border-radius:8px; font-size:13px;
+    opacity:0; pointer-events:none; transition:opacity .2s;}
+  #toast.show{opacity:0.94;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>사진 가림 편집기</h1>
+    <span class="fname" id="fname"></span>
+    <div class="spacer"></div>
+  </header>
+
+  <main>
+    <aside id="side">
+      <button id="openBtn">사진 열기</button>
+      <p class="hint">창 안으로 사진을 끌어다 놓아도 됩니다.</p>
+
+      <span class="section-label">도구</span>
+      <div class="grid2" id="toolGrid"></div>
+
+      <span class="section-label">가림 방식</span>
+      <div class="row3" id="effGrid"></div>
+
+      <div id="strengthBox">
+        <label id="strengthLabel">강도  60</label>
+        <input type="range" id="strength" min="1" max="100" value="60">
+        <button id="applyAllBtn">모든 영역에 이 설정 적용</button>
+      </div>
+
+      <span class="section-label">자동</span>
+      <button id="autoBtn" class="btn-accent">얼굴 한 번에 가리기</button>
+      <p id="autoNote">사진 속 얼굴을 찾아 지금 고른 가림 방식으로 한 번에 가려줍니다.</p>
+
+      <span class="section-label">편집</span>
+      <div class="grid2" id="editGrid"></div>
+
+      <button id="saveBtn" class="btn-primary">저장하기</button>
+      <p id="saveNote">원본 해상도 그대로 저장됩니다. 사진은 어디로도 전송되지 않고 이 브라우저 안에서만 처리됩니다.</p>
+    </aside>
+
+    <section id="stage">
+      <div id="toolbar">
+        <span id="status">사진을 열어 주세요.</span>
+        <div class="spacer"></div>
+        <button id="fitBtn">화면에 맞춤</button>
+        <button id="zoomOut">－</button>
+        <span id="zoomLabel">100%</span>
+        <button id="zoomIn">＋</button>
+      </div>
+      <div id="canvasWrap">
+        <div id="placeholder">사진을 열거나 이곳에 끌어다 놓으세요</div>
+        <canvas id="view"></canvas>
+      </div>
+    </section>
+  </main>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" class="hidden">
+<div id="toast"></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
