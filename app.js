@@ -986,28 +986,150 @@ function doSave(targetSize, format = "png", quality = 0.92) {
 }
 $("saveBtn").onclick = openSaveDialog;
 
-// ── 얼굴 자동 찾기 (MediaPipe Face Detector, WASM) ───────────────
+// ── 얼굴 자동 찾기 (OpenCV.js — 데스크톱 버전과 동일한 YuNet/Haar) ──
+// 데스크톱 프로그램이 쓰는 것과 똑같은, 검증된 OpenCV 알고리즘을
+// 브라우저에서 그대로 돌립니다(공식 OpenCV.js 빌드).
 let faceDetectorPromise = null;
+
+function cvIsReady() {
+  try { return !!(window.cv && window.cv.Mat); } catch (e) { return false; }
+}
+
+function loadOpenCV() {
+  return new Promise((resolve, reject) => {
+    if (cvIsReady()) { resolve(window.cv); return; }
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(window.cv); } };
+    const fail = (err) => { if (!settled) { settled = true; reject(err); } };
+
+    if (!document.querySelector('script[data-opencv-loader]')) {
+      window.Module = window.Module || {};
+      const prevInit = window.Module.onRuntimeInitialized;
+      window.Module.onRuntimeInitialized = () => { if (prevInit) prevInit(); finish(); };
+      const script = document.createElement("script");
+      script.src = "https://docs.opencv.org/4.x/opencv.js";
+      script.async = true;
+      script.setAttribute("data-opencv-loader", "1");
+      script.onerror = () => fail(new Error("OpenCV.js 스크립트를 불러오지 못했습니다."));
+      document.head.appendChild(script);
+    }
+
+    const start = Date.now();
+    const poll = setInterval(() => {
+      if (settled) { clearInterval(poll); return; }
+      if (cvIsReady()) { clearInterval(poll); finish(); return; }
+      if (Date.now() - start > 20000) {
+        clearInterval(poll);
+        fail(new Error("OpenCV.js 로딩이 20초 안에 끝나지 않았습니다."));
+      }
+    }, 200);
+  });
+}
+
+async function ensureFileInFS(cv, name, url) {
+  try {
+    cv.FS_readFile(name);
+    return name; // 이미 등록돼 있음
+  } catch (e) { /* 아직 없음 → 아래에서 받아옴 */ }
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url} 를 불러오지 못했습니다 (HTTP ${resp.status})`);
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  cv.FS_createDataFile("/", name, buf, true, false, false);
+  return name;
+}
+
+function makeOpenCVFaceDetector(cv, yunetPath, cascadePath) {
+  let yunet = null;
+  let cascade = null;
+  if (yunetPath) {
+    try {
+      yunet = new cv.FaceDetectorYN(yunetPath, "", new cv.Size(320, 320), 0.5, 0.3, 5000);
+    } catch (e) {
+      console.error("YuNet 초기화 실패, Haar cascade로 대체합니다:", e);
+      yunet = null;
+    }
+  }
+  if (!yunet && cascadePath) {
+    cascade = new cv.CascadeClassifier();
+    cascade.load(cascadePath);
+  }
+
+  return {
+    detect(canvas) {
+      const out = [];
+      const mat = cv.imread(canvas);
+      try {
+        if (yunet) {
+          // YuNet(동적 입력) 모델은 가로/세로가 32의 배수여야 합니다.
+          const pw = Math.ceil(mat.cols / 32) * 32;
+          const ph = Math.ceil(mat.rows / 32) * 32;
+          let input = mat;
+          let padded = null;
+          if (pw !== mat.cols || ph !== mat.rows) {
+            padded = new cv.Mat();
+            cv.copyMakeBorder(mat, padded, 0, ph - mat.rows, 0, pw - mat.cols,
+                              cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0));
+            input = padded;
+          }
+          yunet.setInputSize(new cv.Size(pw, ph));
+          const faces = new cv.Mat();
+          try {
+            yunet.detect(input, faces);
+            for (let i = 0; i < faces.rows; i++) {
+              const row = faces.data32F.subarray(i * 15, i * 15 + 15);
+              out.push({ boundingBox: { originX: row[0], originY: row[1], width: row[2], height: row[3] } });
+            }
+          } finally {
+            faces.delete();
+            if (padded) padded.delete();
+          }
+        } else if (cascade) {
+          const gray = new cv.Mat();
+          try {
+            cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+            cv.equalizeHist(gray, gray);
+            const faces = new cv.RectVector();
+            try {
+              cascade.detectMultiScale(gray, faces, 1.08, 5, 0, new cv.Size(24, 24));
+              for (let i = 0; i < faces.size(); i++) {
+                const r = faces.get(i);
+                out.push({ boundingBox: { originX: r.x, originY: r.y, width: r.width, height: r.height } });
+              }
+            } finally {
+              faces.delete();
+            }
+          } finally {
+            gray.delete();
+          }
+        }
+      } finally {
+        mat.delete();
+      }
+      return { detections: out };
+    },
+  };
+}
+
 async function getFaceDetector() {
   if (!faceDetectorPromise) {
     faceDetectorPromise = (async () => {
-      const { FaceDetector, FilesetResolver } = await import(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14"
-      );
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-      );
-      return await FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          // 참고: blaze_face_full_range는 현재 tasks-vision 라이브러리와
-          // 내부 텐서 형식이 맞지 않아 오류가 나서(공식 이슈 트래커에도 보고됨)
-          // short_range를 씁니다. 인식 민감도를 낮춰 놓치는 얼굴을 줄였습니다.
-          modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-        },
-        minDetectionConfidence: 0.4,
-        runningMode: "IMAGE",
-      });
+      const cv = await loadOpenCV();
+      let yunetPath = null;
+      try {
+        yunetPath = await ensureFileInFS(cv, "face_detection_yunet.onnx", "./face_detection_yunet.onnx");
+      } catch (e) {
+        console.error("YuNet 모델 파일을 불러오지 못했습니다(Haar로 대체):", e);
+      }
+      let cascadePath = null;
+      try {
+        cascadePath = await ensureFileInFS(cv, "haarcascade_frontalface_default.xml", "./haarcascade_frontalface_default.xml");
+      } catch (e) {
+        console.error("Haar cascade 파일을 불러오지 못했습니다:", e);
+      }
+      if (!yunetPath && !cascadePath) {
+        throw new Error("얼굴 인식에 필요한 파일을 하나도 불러오지 못했습니다.");
+      }
+      return makeOpenCVFaceDetector(cv, yunetPath, cascadePath);
     })();
   }
   return faceDetectorPromise;
