@@ -831,10 +831,22 @@ function updateStatus() {
 }
 
 // ── 저장 (크기 지정 대화상자) ────────────────────────────────────
+function supportsWebP() {
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    return c.toDataURL("image/webp").indexOf("data:image/webp") === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 function openSaveDialog() {
   if (!state.src) { toast("먼저 사진을 열어 주세요."); return; }
   const w = state.src.width, h = state.src.height;
   const ratio = w / h;
+  const webpOK = supportsWebP();
+  const defaultFmt = webpOK ? "webp" : "jpeg";
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
@@ -844,11 +856,25 @@ function openSaveDialog() {
       <label class="radio"><input type="radio" name="szmode" value="original" checked> 원본 크기 그대로  (${w} × ${h}px)</label>
       <label class="radio"><input type="radio" name="szmode" value="custom"> 크기 지정</label>
       <div class="size-row">
-        <span>가로</span><input type="number" id="szW" value="${w}" disabled>
-        <span>세로</span><input type="number" id="szH" value="${h}" disabled>
+        <span>가로</span><input type="number" id="szW" value="${w}" min="1" max="${w}" disabled>
+        <span>세로</span><input type="number" id="szH" value="${h}" min="1" max="${h}" disabled>
         <span style="color:var(--muted);font-size:11px;">px</span>
       </div>
-      <p class="tip">한쪽 값만 입력해도 비율에 맞춰 나머지가 채워집니다.<br>축소할 때는 화질 손실을 줄이는 방식으로 처리합니다.</p>
+      <p class="tip" id="szTip">한쪽 값만 입력해도 비율에 맞춰 나머지가 채워집니다. 원본(${w}×${h}px)보다 크게는 저장할 수 없습니다 — 더 키우면 화질만 나빠지기 때문입니다.</p>
+
+      <h3 style="margin-top:4px;">파일 형식</h3>
+      <label class="radio"><input type="radio" name="szfmt" value="webp" ${defaultFmt === "webp" ? "checked" : ""} ${webpOK ? "" : "disabled"}>
+        WebP — 용량을 크게 줄이면서 화질 차이는 거의 없음 (추천)${webpOK ? "" : " · 이 브라우저에서는 지원하지 않음"}</label>
+      <label class="radio"><input type="radio" name="szfmt" value="jpeg" ${defaultFmt === "jpeg" ? "checked" : ""}> JPEG — 문서·이메일 첨부 시 호환성이 가장 좋음</label>
+      <label class="radio"><input type="radio" name="szfmt" value="png"> PNG — 무손실이라 용량이 가장 큼</label>
+
+      <div class="size-row" id="qualityRow">
+        <span>압축률</span>
+        <input type="range" id="szQuality" min="40" max="100" value="92" style="flex:1;">
+        <span id="szQualityLabel" style="width:30px;text-align:right;font-size:12px;">92</span>
+      </div>
+      <p class="tip">숫자가 낮을수록 파일은 작아지지만 화질도 함께 낮아집니다. 90 안팎이면 눈으로는 원본과 거의 구분되지 않으면서 용량은 크게 줄어듭니다.</p>
+
       <div class="btns">
         <button id="szCancel">취소</button>
         <button id="szOk" class="btn-primary">저장</button>
@@ -858,6 +884,11 @@ function openSaveDialog() {
 
   const szW = backdrop.querySelector("#szW");
   const szH = backdrop.querySelector("#szH");
+  const szQuality = backdrop.querySelector("#szQuality");
+  const szQualityLabel = backdrop.querySelector("#szQualityLabel");
+  const qualityRow = backdrop.querySelector("#qualityRow");
+  const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
   const radios = backdrop.querySelectorAll('input[name="szmode"]');
   let guard = false;
   radios.forEach((r) => r.addEventListener("change", () => {
@@ -866,16 +897,30 @@ function openSaveDialog() {
   }));
   szW.addEventListener("input", () => {
     if (guard) return;
-    const v = parseFloat(szW.value);
+    let v = parseFloat(szW.value);
     if (!v || v <= 0) return;
-    guard = true; szH.value = Math.max(1, Math.round(v / ratio)); guard = false;
+    v = clamp(Math.round(v), 1, w);
+    guard = true;
+    szW.value = v;
+    szH.value = clamp(Math.round(v / ratio), 1, h);
+    guard = false;
   });
   szH.addEventListener("input", () => {
     if (guard) return;
-    const v = parseFloat(szH.value);
+    let v = parseFloat(szH.value);
     if (!v || v <= 0) return;
-    guard = true; szW.value = Math.max(1, Math.round(v * ratio)); guard = false;
+    v = clamp(Math.round(v), 1, h);
+    guard = true;
+    szH.value = v;
+    szW.value = clamp(Math.round(v * ratio), 1, w);
+    guard = false;
   });
+
+  backdrop.querySelectorAll('input[name="szfmt"]').forEach((r) => r.addEventListener("change", () => {
+    const fmt = backdrop.querySelector('input[name="szfmt"]:checked').value;
+    qualityRow.style.display = fmt === "png" ? "none" : "flex";
+  }));
+  szQuality.addEventListener("input", () => { szQualityLabel.textContent = szQuality.value; });
 
   const closeDialog = () => { window.removeEventListener("keydown", onEsc, true); backdrop.remove(); };
   const onEsc = (e) => { if (e.key === "Escape") closeDialog(); };
@@ -886,13 +931,15 @@ function openSaveDialog() {
     const mode = backdrop.querySelector('input[name="szmode"]:checked').value;
     let target = null;
     if (mode === "custom") {
-      const tw = Math.max(1, Math.round(parseFloat(szW.value)));
-      const th = Math.max(1, Math.round(parseFloat(szH.value)));
+      const tw = clamp(Math.max(1, Math.round(parseFloat(szW.value))), 1, w);
+      const th = clamp(Math.max(1, Math.round(parseFloat(szH.value))), 1, h);
       if (!tw || !th) { alert("가로/세로 값을 확인해 주세요."); return; }
       target = [tw, th];
     }
+    const format = backdrop.querySelector('input[name="szfmt"]:checked').value;
+    const quality = parseInt(szQuality.value, 10) / 100;
     closeDialog();
-    doSave(target);
+    doSave(target, format, quality);
   };
 }
 
@@ -920,18 +967,22 @@ async function saveBlob(blob, suggestedName) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-function doSave(targetSize) {
+function doSave(targetSize, format = "png", quality = 0.92) {
   const rendered = render();
   let finalCanvas = rendered;
   if (targetSize && (targetSize[0] !== rendered.width || targetSize[1] !== rendered.height)) {
     finalCanvas = highQualityResize(rendered, targetSize[0], targetSize[1]);
   }
+  const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+  const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png";
   const tag = targetSize ? `_${targetSize[0]}x${targetSize[1]}` : "";
-  const name = `${state.filenameStem}_가림${tag}.png`;
+  const name = `${state.filenameStem}_가림${tag}.${ext}`;
   finalCanvas.toBlob(async (blob) => {
+    if (!blob) { toast("저장하지 못했습니다. 다른 형식으로 다시 시도해 주세요."); return; }
     await saveBlob(blob, name);
-    toast(`저장했습니다 · ${finalCanvas.width} × ${finalCanvas.height}px`);
-  }, "image/png");
+    const kb = (blob.size / 1024).toFixed(0);
+    toast(`저장했습니다 · ${finalCanvas.width} × ${finalCanvas.height}px · 약 ${kb}KB`);
+  }, mime, format === "png" ? undefined : quality);
 }
 $("saveBtn").onclick = openSaveDialog;
 
@@ -941,7 +992,7 @@ async function getFaceDetector() {
   if (!faceDetectorPromise) {
     faceDetectorPromise = (async () => {
       const { FaceDetector, FilesetResolver } = await import(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm"
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14"
       );
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -949,7 +1000,7 @@ async function getFaceDetector() {
       return await FaceDetector.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.task",
+            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
         },
         runningMode: "IMAGE",
       });
@@ -966,7 +1017,8 @@ async function autoFaces() {
   try {
     detector = await getFaceDetector();
   } catch (e) {
-    toast("얼굴 인식 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.");
+    console.error("얼굴 인식 모델을 불러오는 데 실패했습니다:", e);
+    toast("얼굴 인식 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요. (자세한 내용은 개발자 도구 콘솔 참고)");
     $("autoBtn").disabled = false;
     return;
   }
@@ -974,6 +1026,7 @@ async function autoFaces() {
   try {
     result = detector.detect(state.src);
   } catch (e) {
+    console.error("얼굴을 찾는 중 문제가 생겼습니다:", e);
     toast("얼굴을 찾는 중 문제가 생겼습니다.");
     $("autoBtn").disabled = false;
     return;
