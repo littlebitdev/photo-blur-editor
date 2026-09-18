@@ -1013,6 +1013,99 @@ async function getFaceDetector() {
   return faceDetectorPromise;
 }
 
+// ── 여러 얼굴을 놓치지 않기 위한 전처리 ──────────────────────────
+// (1) 원본이 작으면 확대, 너무 크면 축소 — 데스크톱 버전과 같은 방식
+// (2) 인원이 많은 사진은 구역을 나눠 각각 검사한 뒤 결과를 합침
+//     (BlazeFace는 내부적으로 128×128까지 축소해서 보기 때문에, 사진
+//      한 장을 통째로 넣으면 사람이 많을수록 얼굴 하나하나가 너무
+//      작아져 놓치기 쉽습니다. 구역을 나눠 보면 같은 얼굴이라도
+//      모델이 보는 상대적 크기가 커집니다.)
+function detectionScaleFor(w, h) {
+  const longSide = Math.max(w, h);
+  if (longSide > 1600) return 1600 / longSide;
+  if (longSide < 960) return Math.min(2.5, 960 / longSide);
+  return 1;
+}
+function scaledCanvas(src, scale) {
+  if (Math.abs(scale - 1) < 0.01) return src;
+  const nw = Math.max(1, Math.round(src.width * scale));
+  const nh = Math.max(1, Math.round(src.height * scale));
+  const c = document.createElement("canvas");
+  c.width = nw; c.height = nh;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, 0, 0, nw, nh);
+  return c;
+}
+function computeFaceTiles(w, h, target = 420) {
+  const cols = Math.min(4, Math.max(1, Math.round(w / target)));
+  const rows = Math.min(4, Math.max(1, Math.round(h / target)));
+  if (cols <= 1 && rows <= 1) return [];
+  const tw = w / cols, th = h / rows;
+  const ox = tw * 0.25, oy = th * 0.25;
+  const tiles = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x1 = Math.max(0, c * tw - ox), y1 = Math.max(0, r * th - oy);
+      const x2 = Math.min(w, (c + 1) * tw + ox), y2 = Math.min(h, (r + 1) * th + oy);
+      tiles.push([x1, y1, x2 - x1, y2 - y1]);
+    }
+  }
+  return tiles;
+}
+function mergeFaceBoxes(boxes, thr = 0.3) {
+  const sorted = boxes.slice().sort((a, b) => b[2] * b[3] - a[2] * a[3]);
+  const kept = [];
+  for (const b of sorted) {
+    const [bx, by, bw, bh] = b;
+    let dup = false;
+    for (const k of kept) {
+      const [kx, ky, kw, kh] = k;
+      const ix = Math.max(0, Math.min(bx + bw, kx + kw) - Math.max(bx, kx));
+      const iy = Math.max(0, Math.min(by + bh, ky + kh) - Math.max(by, ky));
+      const inter = ix * iy;
+      if (inter && inter / Math.min(bw * bh, kw * kh) > thr) { dup = true; break; }
+    }
+    if (!dup) kept.push(b);
+  }
+  return kept;
+}
+function runDetectInto(detector, canvas, offX, offY, out) {
+  let result;
+  try {
+    result = detector.detect(canvas);
+  } catch (e) {
+    console.error("얼굴 인식 중 한 구역에서 오류(해당 구역만 건너뜀):", e);
+    return;
+  }
+  for (const d of result.detections || []) {
+    const bb = d.boundingBox;
+    out.push([offX + bb.originX, offY + bb.originY, bb.width, bb.height]);
+  }
+}
+function detectFacesMulti(detector, srcCanvas) {
+  const W = srcCanvas.width, H = srcCanvas.height;
+  const scale = detectionScaleFor(W, H);
+  const work = scaledCanvas(srcCanvas, scale);
+  const wW = work.width, wH = work.height;
+
+  const collected = [];
+  runDetectInto(detector, work, 0, 0, collected);
+
+  const tiles = computeFaceTiles(wW, wH, 420);
+  for (const [tx, ty, tw, th] of tiles) {
+    const tc = document.createElement("canvas");
+    tc.width = Math.max(1, Math.round(tw));
+    tc.height = Math.max(1, Math.round(th));
+    tc.getContext("2d").drawImage(work, tx, ty, tw, th, 0, 0, tc.width, tc.height);
+    runDetectInto(detector, tc, tx, ty, collected);
+  }
+
+  const merged = mergeFaceBoxes(collected);
+  return merged.map(([x, y, w, h]) => [x / scale, y / scale, w / scale, h / scale]);
+}
+
 async function autoFaces() {
   if (!state.src) { toast("먼저 사진을 열어 주세요."); return; }
   $("autoBtn").disabled = true;
@@ -1026,9 +1119,9 @@ async function autoFaces() {
     $("autoBtn").disabled = false;
     return;
   }
-  let result;
+  let dets;
   try {
-    result = detector.detect(state.src);
+    dets = detectFacesMulti(detector, state.src);
   } catch (e) {
     console.error("얼굴을 찾는 중 문제가 생겼습니다:", e);
     toast("얼굴을 찾는 중 문제가 생겼습니다.");
@@ -1036,16 +1129,14 @@ async function autoFaces() {
     return;
   }
   $("autoBtn").disabled = false;
-  const dets = result.detections || [];
   if (!dets.length) { toast("얼굴을 찾지 못했습니다. 직접 영역을 그려 주세요."); return; }
 
   const W = state.src.width, H = state.src.height;
   const before = snapshot();
-  for (const d of dets) {
-    const bb = d.boundingBox;
-    const padx = bb.width * 0.16, padyT = bb.height * 0.26, padyB = bb.height * 0.14;
-    const x1 = Math.max(0, bb.originX - padx), y1 = Math.max(0, bb.originY - padyT);
-    const x2 = Math.min(W, bb.originX + bb.width + padx), y2 = Math.min(H, bb.originY + bb.height + padyB);
+  for (const [x, y, w, h] of dets) {
+    const padx = w * 0.16, padyT = h * 0.26, padyB = h * 0.14;
+    const x1 = Math.max(0, x - padx), y1 = Math.max(0, y - padyT);
+    const x2 = Math.min(W, x + w + padx), y2 = Math.min(H, y + h + padyB);
     state.ops.push({ type: "ellipse", box: [x1, y1, x2, y2], effect: state.effect, strength: state.strength });
   }
   state.selected = state.ops.length - 1;
