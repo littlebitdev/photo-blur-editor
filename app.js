@@ -999,10 +999,11 @@ async function getFaceDetector() {
       );
       return await FaceDetector.createFromOptions(vision, {
         baseOptions: {
-          // full_range: 셀카처럼 가까운 얼굴만 잡는 short_range와 달리,
-          // 단체 사진·약간 떨어진 거리의 얼굴까지 폭넓게 인식합니다.
+          // 참고: blaze_face_full_range는 현재 tasks-vision 라이브러리와
+          // 내부 텐서 형식이 맞지 않아 오류가 나서(공식 이슈 트래커에도 보고됨)
+          // short_range를 씁니다. 인식 민감도를 낮춰 놓치는 얼굴을 줄였습니다.
           modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite",
+            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
         },
         minDetectionConfidence: 0.4,
         runningMode: "IMAGE",
