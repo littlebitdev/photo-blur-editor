@@ -823,12 +823,26 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+  const duration = Math.min(7000, Math.max(2600, msg.length * 60));
+  toastTimer = setTimeout(() => el.classList.remove("show"), duration);
 }
 function updateStatus() {
   if (!state.src) { $("status").textContent = "사진을 열어 주세요."; return; }
   $("status").textContent = `${state.src.width} × ${state.src.height}px · 가림 영역 ${state.ops.length}개`;
 }
+
+// 예상치 못한 오류가 조용히 묻히지 않도록 하는 안전망입니다.
+window.addEventListener("error", (e) => {
+  console.error("처리되지 않은 오류:", e.error || e.message);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("처리되지 않은 프로미스 오류:", e.reason);
+  const autoBtn = document.getElementById("autoBtn");
+  if (autoBtn && autoBtn.disabled) {
+    autoBtn.disabled = false;
+    toast("예상치 못한 오류가 발생했습니다. 개발자 도구 콘솔을 확인해 주세요.");
+  }
+});
 
 // ── 저장 (크기 지정 대화상자) ────────────────────────────────────
 function supportsWebP() {
@@ -995,32 +1009,48 @@ function cvIsReady() {
   try { return !!(window.cv && window.cv.Mat); } catch (e) { return false; }
 }
 
-function loadOpenCV() {
+function loadOpenCV(onProgress, forceReload) {
   return new Promise((resolve, reject) => {
-    if (cvIsReady()) { resolve(window.cv); return; }
+    if (!forceReload && cvIsReady()) { resolve(window.cv); return; }
     let settled = false;
     const finish = () => { if (!settled) { settled = true; resolve(window.cv); } };
     const fail = (err) => { if (!settled) { settled = true; reject(err); } };
 
-    if (!document.querySelector('script[data-opencv-loader]')) {
+    if (forceReload) {
+      const old = document.querySelector('script[data-opencv-loader]');
+      if (old) old.remove();
+      try { window.cv = undefined; } catch (e) { /* 무시 */ }
+    }
+
+    if (forceReload || !document.querySelector('script[data-opencv-loader]')) {
       window.Module = window.Module || {};
       const prevInit = window.Module.onRuntimeInitialized;
       window.Module.onRuntimeInitialized = () => { if (prevInit) prevInit(); finish(); };
       const script = document.createElement("script");
-      script.src = "https://docs.opencv.org/4.x/opencv.js";
+      script.src = "https://docs.opencv.org/4.x/opencv.js" + (forceReload ? ("?_t=" + Date.now()) : "");
       script.async = true;
       script.setAttribute("data-opencv-loader", "1");
-      script.onerror = () => fail(new Error("OpenCV.js 스크립트를 불러오지 못했습니다."));
+      script.onload = () => {
+        // 최신 빌드는 onRuntimeInitialized 대신 cv 자체가 Promise인 경우가 있어 함께 대비합니다.
+        if (window.cv && typeof window.cv.then === "function") {
+          window.cv.then((ready) => { window.cv = ready; finish(); }).catch(fail);
+        }
+      };
+      script.onerror = () => fail(new Error("OpenCV.js 스크립트를 불러오지 못했습니다. (네트워크 또는 방화벽 문제일 수 있습니다)"));
       document.head.appendChild(script);
     }
 
     const start = Date.now();
+    const TIMEOUT_MS = 45000;
+    let toldSlow = false;
     const poll = setInterval(() => {
       if (settled) { clearInterval(poll); return; }
       if (cvIsReady()) { clearInterval(poll); finish(); return; }
-      if (Date.now() - start > 20000) {
+      const elapsed = Date.now() - start;
+      if (!toldSlow && elapsed > 8000 && onProgress) { toldSlow = true; onProgress(); }
+      if (elapsed > TIMEOUT_MS) {
         clearInterval(poll);
-        fail(new Error("OpenCV.js 로딩이 20초 안에 끝나지 않았습니다."));
+        fail(new Error(`OpenCV.js 로딩이 ${TIMEOUT_MS / 1000}초 안에 끝나지 않았습니다. (네트워크가 느리거나 학교/기관 방화벽이 docs.opencv.org 접속을 막고 있을 수 있습니다)`));
       }
     }, 200);
   });
@@ -1110,10 +1140,11 @@ function makeOpenCVFaceDetector(cv, yunetPath, cascadePath) {
   };
 }
 
-async function getFaceDetector() {
+async function getFaceDetector(onProgress, forceReload) {
+  if (forceReload) faceDetectorPromise = null;
   if (!faceDetectorPromise) {
     faceDetectorPromise = (async () => {
-      const cv = await loadOpenCV();
+      const cv = await loadOpenCV(onProgress, forceReload);
       let yunetPath = null;
       try {
         yunetPath = await ensureFileInFS(cv, "face_detection_yunet.onnx", "./face_detection_yunet.onnx");
@@ -1228,19 +1259,54 @@ function detectFacesMulti(detector, srcCanvas) {
   return merged.map(([x, y, w, h]) => [x / scale, y / scale, w / scale, h / scale]);
 }
 
+// ── 얼굴 인식 준비 상태 표시 ──────────────────────────────────────
+let cvState = "idle"; // idle | loading | ready | error
+function setCvStatus(newState, text) {
+  cvState = newState;
+  const dot = $("cvStatusDot");
+  dot.className = newState === "idle" ? "" : newState;
+  $("cvStatusText").textContent = text;
+}
+function extractCvVersion() {
+  try {
+    const info = window.cv.getBuildInformation();
+    const m = info.match(/OpenCV\s+([\d.]+[\w-]*)/i);
+    return m ? ` (OpenCV.js ${m[1]})` : "";
+  } catch (e) { return ""; }
+}
+async function ensureOpenCVReady(forceReload) {
+  if (cvState === "ready" && !forceReload) return true;
+  setCvStatus("loading", "얼굴 인식 라이브러리를 불러오는 중…");
+  $("cvLoadBtn").disabled = true;
+  try {
+    await getFaceDetector(() => {
+      setCvStatus("loading", "내려받는 중입니다… (파일이 커서 시간이 걸릴 수 있어요)");
+    }, forceReload);
+    setCvStatus("ready", "얼굴 인식 준비 완료" + extractCvVersion());
+    $("cvLoadBtn").textContent = "다시 불러오기";
+    $("cvLoadBtn").disabled = false;
+    return true;
+  } catch (e) {
+    console.error("얼굴 인식 라이브러리를 불러오지 못했습니다:", e);
+    setCvStatus("error", "불러오지 못했습니다 — " + (e && e.message ? e.message : "알 수 없는 오류"));
+    $("cvLoadBtn").textContent = "다시 시도";
+    $("cvLoadBtn").disabled = false;
+    return false;
+  }
+}
+$("cvLoadBtn").onclick = () => ensureOpenCVReady(true); // 수동으로 누르면 항상 새로 확인(캐시 무시)
+
 async function autoFaces() {
   if (!state.src) { toast("먼저 사진을 열어 주세요."); return; }
   $("autoBtn").disabled = true;
-  toast("얼굴을 찾는 중입니다…");
-  let detector;
-  try {
-    detector = await getFaceDetector();
-  } catch (e) {
-    console.error("얼굴 인식 모델을 불러오는 데 실패했습니다:", e);
-    toast("얼굴 인식 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요. (자세한 내용은 개발자 도구 콘솔 참고)");
+  const ready = await ensureOpenCVReady(false);
+  if (!ready) {
+    toast("얼굴 인식 기능을 불러오지 못했습니다. 위 상태 표시의 오류 내용을 확인해 주세요.");
     $("autoBtn").disabled = false;
     return;
   }
+  toast("얼굴을 찾는 중입니다…");
+  const detector = await getFaceDetector();
   let dets;
   try {
     dets = detectFacesMulti(detector, state.src);
