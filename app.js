@@ -1002,66 +1002,86 @@ $("saveBtn").onclick = openSaveDialog;
 
 // ── 얼굴 자동 찾기 (OpenCV.js — 데스크톱 버전과 동일한 YuNet/Haar) ──
 // 데스크톱 프로그램이 쓰는 것과 똑같은, 검증된 OpenCV 알고리즘을
-// 브라우저에서 그대로 돌립니다(공식 OpenCV.js 빌드).
+// 브라우저에서 그대로 돌립니다(공식 OpenCV.js 빌드, 저장소에 함께 배포).
 let faceDetectorPromise = null;
-
-function cvIsReady() {
-  try { return !!(window.cv && window.cv.Mat); } catch (e) { return false; }
-}
 
 function loadOpenCV(onProgress, forceReload) {
   return new Promise((resolve, reject) => {
-    if (!forceReload && cvIsReady()) { resolve(window.cv); return; }
+    if (!forceReload && window.cv && window.cv.Mat) { resolve(window.cv); return; }
+
     let settled = false;
-    const finish = () => { if (!settled) { settled = true; resolve(window.cv); } };
+    const finish = (readyCv) => { if (!settled) { settled = true; resolve(readyCv || window.cv); } };
     const fail = (err) => { if (!settled) { settled = true; reject(err); } };
+
+    // OpenCV.js(UMD)가 준비되는 세 가지 경우를 모두 대비합니다.
+    // (공식 배포 패키지가 안내하는 방식과 동일)
+    const attachAndWait = () => {
+      const cvModule = window.cv;
+      if (!cvModule) return; // 스크립트가 아직 실행 전 — 아래 폴링에 맡김
+      if (cvModule instanceof Promise) {
+        cvModule.then((readyCv) => { window.cv = readyCv; finish(readyCv); }).catch(fail);
+      } else if (cvModule.Mat) {
+        finish(cvModule); // 이미 준비된 상태
+      } else {
+        cvModule.onRuntimeInitialized = () => finish(window.cv);
+      }
+    };
 
     if (forceReload) {
       const old = document.querySelector('script[data-opencv-loader]');
       if (old) old.remove();
-      try { window.cv = undefined; } catch (e) { /* 무시 */ }
+      window.cv = undefined;
     }
 
     if (forceReload || !document.querySelector('script[data-opencv-loader]')) {
-      window.Module = window.Module || {};
-      const prevInit = window.Module.onRuntimeInitialized;
-      window.Module.onRuntimeInitialized = () => { if (prevInit) prevInit(); finish(); };
       const script = document.createElement("script");
-      script.src = "https://docs.opencv.org/4.x/opencv.js" + (forceReload ? ("?_t=" + Date.now()) : "");
+      script.src = "./opencv.js" + (forceReload ? ("?_t=" + Date.now()) : "");
       script.async = true;
       script.setAttribute("data-opencv-loader", "1");
-      script.onload = () => {
-        // 최신 빌드는 onRuntimeInitialized 대신 cv 자체가 Promise인 경우가 있어 함께 대비합니다.
-        if (window.cv && typeof window.cv.then === "function") {
-          window.cv.then((ready) => { window.cv = ready; finish(); }).catch(fail);
-        }
-      };
-      script.onerror = () => fail(new Error("OpenCV.js 스크립트를 불러오지 못했습니다. (네트워크 또는 방화벽 문제일 수 있습니다)"));
+      script.onload = attachAndWait;
+      script.onerror = () => fail(new Error("opencv.js 파일을 불러오지 못했습니다. (저장소에 opencv.js 파일이 함께 올라가 있는지 확인해 주세요)"));
       document.head.appendChild(script);
+    } else {
+      attachAndWait();
     }
 
+    // 안전망: 위 신호를 놓치는 경우를 대비해 준비 상태를 계속 확인하고,
+    // 지나치게 오래 걸리면(파일이 커서 느릴 수 있음) 진행 상황을 알리고 결국 실패 처리합니다.
     const start = Date.now();
     const TIMEOUT_MS = 45000;
     let toldSlow = false;
     const poll = setInterval(() => {
       if (settled) { clearInterval(poll); return; }
-      if (cvIsReady()) { clearInterval(poll); finish(); return; }
+      if (window.cv && window.cv.Mat) { clearInterval(poll); finish(window.cv); return; }
       const elapsed = Date.now() - start;
       if (!toldSlow && elapsed > 8000 && onProgress) { toldSlow = true; onProgress(); }
       if (elapsed > TIMEOUT_MS) {
         clearInterval(poll);
-        fail(new Error(`OpenCV.js 로딩이 ${TIMEOUT_MS / 1000}초 안에 끝나지 않았습니다. (네트워크가 느리거나 학교/기관 방화벽이 docs.opencv.org 접속을 막고 있을 수 있습니다)`));
+        fail(new Error(`opencv.js 로딩이 ${TIMEOUT_MS / 1000}초 안에 끝나지 않았습니다.`));
       }
     }, 200);
   });
 }
 
-async function ensureFileInFS(cv, name, url) {
+async function ensureFileInFS(cv, name, url, timeoutMs = 20000) {
   try {
     cv.FS_readFile(name);
     return name; // 이미 등록돼 있음
   } catch (e) { /* 아직 없음 → 아래에서 받아옴 */ }
-  const resp = await fetch(url);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let resp;
+  try {
+    resp = await fetch(url, { signal: controller.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error(`${url} 요청이 ${timeoutMs / 1000}초 안에 끝나지 않았습니다.`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!resp.ok) throw new Error(`${url} 를 불러오지 못했습니다 (HTTP ${resp.status})`);
   const buf = new Uint8Array(await resp.arrayBuffer());
   cv.FS_createDataFile("/", name, buf, true, false, false);
@@ -1079,9 +1099,19 @@ function makeOpenCVFaceDetector(cv, yunetPath, cascadePath) {
       yunet = null;
     }
   }
-  if (!yunet && cascadePath) {
-    cascade = new cv.CascadeClassifier();
-    cascade.load(cascadePath);
+  if (!yunet && cascadePath && cv.CascadeClassifier) {
+    try {
+      cascade = new cv.CascadeClassifier();
+      cascade.load(cascadePath);
+    } catch (e) {
+      console.error("Haar cascade 초기화 실패:", e);
+      cascade = null;
+    }
+  } else if (!yunet && cascadePath) {
+    console.warn("이 OpenCV.js 빌드에는 CascadeClassifier가 포함돼 있지 않습니다.");
+  }
+  if (!yunet && !cascade) {
+    throw new Error("얼굴 인식을 초기화하지 못했습니다 (YuNet과 Haar cascade 모두 사용할 수 없음)");
   }
 
   return {
