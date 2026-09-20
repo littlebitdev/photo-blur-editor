@@ -1005,11 +1005,15 @@ $("saveBtn").onclick = openSaveDialog;
 // 브라우저에서 그대로 돌립니다(공식 OpenCV.js 빌드, 저장소에 함께 배포).
 let faceDetectorPromise = null;
 
+const OPENCV_CDN_URL = "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js";
+const OPENCV_LOCAL_URL = "./opencv.js";
+
 function loadOpenCV(onProgress, forceReload) {
   return new Promise((resolve, reject) => {
     if (!forceReload && window.cv && window.cv.Mat) { resolve(window.cv); return; }
 
     let settled = false;
+    let usingFallback = false;
     const finish = (readyCv) => { if (!settled) { settled = true; resolve(readyCv || window.cv); } };
     const fail = (err) => { if (!settled) { settled = true; reject(err); } };
 
@@ -1019,13 +1023,35 @@ function loadOpenCV(onProgress, forceReload) {
       const cvModule = window.cv;
       if (!cvModule) return; // 스크립트가 아직 실행 전 — 아래 폴링에 맡김
       if (cvModule instanceof Promise) {
-        cvModule.then((readyCv) => { window.cv = readyCv; finish(readyCv); }).catch(fail);
+        cvModule.then((readyCv) => { window.cv = readyCv; finish(readyCv); })
+          .catch(() => { usingFallback ? fail(new Error("opencv.js 초기화에 실패했습니다.")) : switchToFallback(); });
       } else if (cvModule.Mat) {
         finish(cvModule); // 이미 준비된 상태
       } else {
         cvModule.onRuntimeInitialized = () => finish(window.cv);
       }
     };
+
+    function loadScript(src, onFail) {
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.setAttribute("data-opencv-loader", "1");
+      script.onload = attachAndWait;
+      script.onerror = onFail;
+      document.head.appendChild(script);
+    }
+
+    function switchToFallback() {
+      if (settled || usingFallback) return;
+      usingFallback = true;
+      const old = document.querySelector('script[data-opencv-loader]');
+      if (old) old.remove();
+      window.cv = undefined;
+      loadScript(OPENCV_LOCAL_URL + (forceReload ? ("?_t=" + Date.now()) : ""), () => {
+        fail(new Error("opencv.js를 CDN과 저장소 파일 양쪽에서 모두 불러오지 못했습니다."));
+      });
+    }
 
     if (forceReload) {
       const old = document.querySelector('script[data-opencv-loader]');
@@ -1034,20 +1060,18 @@ function loadOpenCV(onProgress, forceReload) {
     }
 
     if (forceReload || !document.querySelector('script[data-opencv-loader]')) {
-      const script = document.createElement("script");
-      script.src = "./opencv.js" + (forceReload ? ("?_t=" + Date.now()) : "");
-      script.async = true;
-      script.setAttribute("data-opencv-loader", "1");
-      script.onload = attachAndWait;
-      script.onerror = () => fail(new Error("opencv.js 파일을 불러오지 못했습니다. (저장소에 opencv.js 파일이 함께 올라가 있는지 확인해 주세요)"));
-      document.head.appendChild(script);
+      // 평소엔 대규모 트래픽에 강한 CDN(jsdelivr)에서 받아오고,
+      // 문제가 있을 때만 저장소에 함께 넣어둔 사본으로 자동 전환합니다.
+      loadScript(OPENCV_CDN_URL + (forceReload ? ("?_t=" + Date.now()) : ""), switchToFallback);
     } else {
       attachAndWait();
     }
 
     // 안전망: 위 신호를 놓치는 경우를 대비해 준비 상태를 계속 확인하고,
-    // 지나치게 오래 걸리면(파일이 커서 느릴 수 있음) 진행 상황을 알리고 결국 실패 처리합니다.
+    // CDN이 일정 시간 안에 응답 없으면 저장소 사본으로 전환하며,
+    // 그래도 지나치게 오래 걸리면 결국 실패 처리합니다.
     const start = Date.now();
+    const CDN_SWITCH_MS = 12000;
     const TIMEOUT_MS = 45000;
     let toldSlow = false;
     const poll = setInterval(() => {
@@ -1055,6 +1079,7 @@ function loadOpenCV(onProgress, forceReload) {
       if (window.cv && window.cv.Mat) { clearInterval(poll); finish(window.cv); return; }
       const elapsed = Date.now() - start;
       if (!toldSlow && elapsed > 8000 && onProgress) { toldSlow = true; onProgress(); }
+      if (!usingFallback && elapsed > CDN_SWITCH_MS) { switchToFallback(); }
       if (elapsed > TIMEOUT_MS) {
         clearInterval(poll);
         fail(new Error(`opencv.js 로딩이 ${TIMEOUT_MS / 1000}초 안에 끝나지 않았습니다.`));
