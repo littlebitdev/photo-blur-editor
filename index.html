@@ -98,6 +98,10 @@ main{display:flex;flex-direction:column;padding:8px;gap:8px;min-height:calc(100v
     <aside id="side">
       <button id="openBtn">사진 열기</button>
       <p class="hint">창 안으로 사진을 끌어다 놓아도 됩니다.</p>
+      <div class="grid2" id="rotateRow" style="margin-top:8px;">
+        <button id="rotateLeftBtn" class="act-btn">↺ 왼쪽 회전</button>
+        <button id="rotateRightBtn" class="act-btn">↻ 오른쪽 회전</button>
+      </div>
 
       <span class="section-label">도구</span>
       <div class="grid2" id="toolGrid"></div>
@@ -147,6 +151,6 @@ main{display:flex;flex-direction:column;padding:8px;gap:8px;min-height:calc(100v
 <input type="file" id="fileInput" accept="image/*" class="hidden">
 <div id="toast"></div>
 
-<script type="module" src="./app.js?v=13"></script>
+<script type="module" src="./app.js?v=14"></script>
 </body>
 </html>

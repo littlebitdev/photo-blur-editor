@@ -404,10 +404,8 @@ const ICONS = {
 const TOOLS = [["rect", "사각형"], ["ellipse", "원"], ["free", "자유 그리기"], ["select", "선택"]];
 const EFFECTS = [["blur", "블러"], ["mosaic", "모자이크"], ["solid", "검은색"]];
 const EDITS = [
-  ["↶ 되돌리기", undo], ["↷ 다시 실행", redo],
   ["영역 복사", copySelected], ["붙여넣기", pasteOp],
   ["선택 지우기", deleteSelected], ["전체 지우기", resetAll],
-  ["↺ 왼쪽 회전", () => rotate(false)], ["↻ 오른쪽 회전", () => rotate(true)],
 ];
 
 const toolGrid = $("toolGrid");
@@ -446,6 +444,14 @@ for (const [label, fn] of EDITS) {
 const undoBtnHeader = document.getElementById("undoBtn");
 const redoBtnHeader = document.getElementById("redoBtn");
 if (undoBtnHeader) undoBtnHeader.onclick = undo;
+if (redoBtnHeader) redoBtnHeader.onclick = redo;
+
+// "사진 열기" 바로 아래의 회전 버튼 — 기존 rotate()에 그대로 연결
+// (사진을 연 직후 방향을 맞추는 흐름이라 여기 배치가 더 직관적입니다)
+const rotateLeftBtn = document.getElementById("rotateLeftBtn");
+const rotateRightBtn = document.getElementById("rotateRightBtn");
+if (rotateLeftBtn) rotateLeftBtn.onclick = () => rotate(false);
+if (rotateRightBtn) rotateRightBtn.onclick = () => rotate(true);
 if (redoBtnHeader) redoBtnHeader.onclick = redo;
 
 function setTool(v) {
@@ -1435,3 +1441,13 @@ setTool("rect");
 setEffect("blur");
 updateStatus();
 redraw();
+
+// 서비스 워커 등록 — 큰 파일을 브라우저에 저장해 두어서
+// 새로고침해도 다시 받지 않고, 오프라인에서도 쓸 수 있게 합니다.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((e) => {
+      console.error("서비스 워커 등록에 실패했습니다(기능에는 영향 없음):", e);
+    });
+  });
+}
