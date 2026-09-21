@@ -1331,7 +1331,7 @@ function detectFacesMulti(detector, srcCanvas) {
   return merged.map(([x, y, w, h]) => [x / scale, y / scale, w / scale, h / scale]);
 }
 
-// ── 얼굴 인식 준비 상태 표시 ──────────────────────────────────────
+// ── 얼굴 인식(자동 가리기) 준비 상태 표시 ─────────────────────────
 let cvState = "idle"; // idle | loading | ready | error
 function setCvStatus(newState, text) {
   cvState = newState;
@@ -1343,24 +1343,29 @@ function extractCvVersion() {
   try {
     const info = window.cv.getBuildInformation();
     const m = info.match(/OpenCV\s+([\d.]+[\w-]*)/i);
-    return m ? ` (OpenCV.js ${m[1]})` : "";
+    return m ? m[1] : "";
   } catch (e) { return ""; }
 }
 async function ensureOpenCVReady(forceReload) {
   if (cvState === "ready" && !forceReload) return true;
-  setCvStatus("loading", "얼굴 인식 라이브러리를 불러오는 중…");
+  const startedAt = Date.now();
+  setCvStatus("loading", "자동 가리기 기능을 준비하는 중입니다…");
   $("cvLoadBtn").disabled = true;
   try {
     await getFaceDetector(() => {
-      setCvStatus("loading", "내려받는 중입니다… (파일이 커서 시간이 걸릴 수 있어요)");
+      setCvStatus("loading", "자동 가리기 기능을 내려받는 중입니다… (시간이 걸릴 수 있어요)");
     }, forceReload);
-    setCvStatus("ready", "얼굴 인식 준비 완료" + extractCvVersion());
+    console.log("얼굴 인식 엔진 정보:", extractCvVersion()); // 개발자 참고용, 화면엔 안 보임
+    const elapsed = Date.now() - startedAt;
+    setCvStatus("ready", elapsed < 2000
+      ? "자동 가리기 기능이 준비됐습니다."
+      : "자동 가리기 기능을 새로 내려받아 준비했습니다.");
     $("cvLoadBtn").textContent = "다시 불러오기";
     $("cvLoadBtn").disabled = false;
     return true;
   } catch (e) {
     console.error("얼굴 인식 라이브러리를 불러오지 못했습니다:", e);
-    setCvStatus("error", "불러오지 못했습니다 — " + (e && e.message ? e.message : "알 수 없는 오류"));
+    setCvStatus("error", "자동 가리기를 준비하지 못했습니다. 다시 시도해 주세요.");
     $("cvLoadBtn").textContent = "다시 시도";
     $("cvLoadBtn").disabled = false;
     return false;
@@ -1451,3 +1456,9 @@ if ("serviceWorker" in navigator) {
     });
   });
 }
+
+// 페이지가 열리면 "자동 가리기(얼굴 인식)" 기능을 미리 준비해 둡니다.
+// 사진 열기 · 손으로 영역 그리기 같은 다른 기능은 이 준비와 무관하게
+// 바로 사용할 수 있고, 준비 중에 버튼을 눌러도 같은 작업을 이어받을 뿐
+// 중복으로 다시 받지 않습니다.
+ensureOpenCVReady(false);
