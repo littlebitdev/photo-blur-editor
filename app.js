@@ -441,6 +441,13 @@ for (const [label, fn] of EDITS) {
   editGrid.appendChild(b);
 }
 
+// 상단 헤더의 실행 취소/다시 실행 버튼 — 기존 undo()/redo()에 그대로 연결
+// (레이아웃 개선으로 추가된 버튼일 뿐, 별도의 되돌리기 로직이 아닙니다)
+const undoBtnHeader = document.getElementById("undoBtn");
+const redoBtnHeader = document.getElementById("redoBtn");
+if (undoBtnHeader) undoBtnHeader.onclick = undo;
+if (redoBtnHeader) redoBtnHeader.onclick = redo;
+
 function setTool(v) {
   state.tool = v;
   state.freePoints = [];
@@ -1204,13 +1211,17 @@ async function getFaceDetector(onProgress, forceReload) {
       try {
         yunetPath = await ensureFileInFS(cv, "face_detection_yunet.onnx", "./face_detection_yunet.onnx");
       } catch (e) {
-        console.error("YuNet 모델 파일을 불러오지 못했습니다(Haar로 대체):", e);
+        console.error("YuNet 모델 파일을 불러오지 못했습니다(가능하면 Haar로 대체):", e);
       }
+      // Haar cascade는 YuNet을 실제로 쓸 수 없고, 이 OpenCV.js 빌드에 그
+      // 기능이 있을 때만 받아옵니다 — 안 쓰일 930KB를 미리 받지 않기 위해서입니다.
       let cascadePath = null;
-      try {
-        cascadePath = await ensureFileInFS(cv, "haarcascade_frontalface_default.xml", "./haarcascade_frontalface_default.xml");
-      } catch (e) {
-        console.error("Haar cascade 파일을 불러오지 못했습니다:", e);
+      if ((!yunetPath || !cv.FaceDetectorYN) && cv.CascadeClassifier) {
+        try {
+          cascadePath = await ensureFileInFS(cv, "haarcascade_frontalface_default.xml", "./haarcascade_frontalface_default.xml");
+        } catch (e) {
+          console.error("Haar cascade 파일을 불러오지 못했습니다:", e);
+        }
       }
       if (!yunetPath && !cascadePath) {
         throw new Error("얼굴 인식에 필요한 파일을 하나도 불러오지 못했습니다.");
