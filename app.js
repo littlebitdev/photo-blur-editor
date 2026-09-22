@@ -522,6 +522,24 @@ window.addEventListener("drop", (e) => {
   if (f && f.type.startsWith("image/")) loadFile(f);
 });
 
+// 클립보드 붙여넣기(Ctrl+V) — 한글 문서·인터넷·탐색기 등에서 복사한
+// 사진을 그대로 불러옵니다. 이미지가 아니면 아무 것도 하지 않아
+// 원래의 붙여넣기 동작(글자 입력칸 등)에 영향을 주지 않습니다.
+window.addEventListener("paste", (e) => {
+  if (document.querySelector(".modal-backdrop")) return; // 저장창 등이 열려 있으면 그 안 입력칸에 평소처럼 붙여넣게 둠
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) loadFile(file);
+      return;
+    }
+  }
+  // 이미지가 아니면 손대지 않고 기본 붙여넣기 동작에 맡깁니다.
+});
+
 async function loadFile(file) {
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
