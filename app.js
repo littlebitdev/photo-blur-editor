@@ -987,8 +987,8 @@ function openSaveDialog() {
   backdrop.innerHTML = `
     <div class="modal">
       <h3>저장 크기</h3>
-      <label class="radio"><input type="radio" name="szmode" value="original" checked> 원본 크기 그대로  (${w} × ${h}px)</label>
-      <label class="radio"><input type="radio" name="szmode" value="custom"> 크기 지정</label>
+      <label class="radio"><input type="radio" name="szmode" value="original"> 원본 크기 그대로  (${w} × ${h}px)</label>
+      <label class="radio"><input type="radio" name="szmode" value="custom" checked> 크기 지정</label>
       <div class="size-row">
         <span>가로</span><input type="number" id="szW" value="${w}" min="1" max="${w}" disabled>
         <span>세로</span><input type="number" id="szH" value="${h}" min="1" max="${h}" disabled>
