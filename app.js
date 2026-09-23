@@ -581,16 +581,55 @@ async function loadFile(file) {
 // ── 보기 (줌/이동/맞춤) ──────────────────────────────────────────
 function fitView() {
   if (!state.src) return;
-  const cw = Math.max(200, wrap.clientWidth - 24);
-  const ch = Math.max(200, wrap.clientHeight - 24);
+  const cw = Math.max(1, wrap.clientWidth);
+  const ch = Math.max(1, wrap.clientHeight);
   state.zoom = Math.min(cw / state.src.width, ch / state.src.height, 1);
   state.pan = { x: 0, y: 0 };
   $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
   redraw();
 }
+function getViewMetrics() {
+  const cw = Math.max(1, wrap.clientWidth);
+  const ch = Math.max(1, wrap.clientHeight);
+  const rendered = state.src ? render() : null;
+  if (!rendered) return null;
+  const dw = rendered.width * state.zoom;
+  const dh = rendered.height * state.zoom;
+  const baseX = Math.max(12, (cw - dw) / 2);
+  const baseY = Math.max(12, (ch - dh) / 2);
+  return { cw, ch, dw, dh, baseX, baseY };
+}
+
+// 확대된 사진이 화면 밖으로 밀려나 흰 여백이 생기지 않도록 패닝 범위를 제한합니다.
+// 사진이 화면보다 큰 방향에서는 사진의 양쪽 끝이 화면의 양쪽 끝을 넘지 않습니다.
+function clampPan() {
+  if (!state.src) return;
+  const m = getViewMetrics();
+  if (!m) return;
+
+  if (m.dw > m.cw) {
+    // 확대된 사진은 해당 방향에서 화면을 완전히 덮도록 제한합니다.
+    // 따라서 사진 가장자리가 화면 안쪽으로 넘어가며 흰 여백이 생기지 않습니다.
+    const minPanX = m.cw - m.dw - m.baseX;
+    const maxPanX = -m.baseX;
+    state.pan.x = Math.max(minPanX, Math.min(maxPanX, state.pan.x));
+  } else {
+    state.pan.x = 0;
+  }
+
+  if (m.dh > m.ch) {
+    const minPanY = m.ch - m.dh - m.baseY;
+    const maxPanY = -m.baseY;
+    state.pan.y = Math.max(minPanY, Math.min(maxPanY, state.pan.y));
+  } else {
+    state.pan.y = 0;
+  }
+}
+
 function changeZoom(mult) {
   if (!state.src) return;
   state.zoom = Math.max(0.05, Math.min(6, state.zoom * mult));
+  clampPan();
   $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
   redraw();
 }
@@ -623,8 +662,11 @@ function redraw() {
 
   const rendered = render();
   const dw = rendered.width * state.zoom, dh = rendered.height * state.zoom;
-  const x = Math.max(12, (cw - dw) / 2) + state.pan.x;
-  const y = Math.max(12, (ch - dh) / 2) + state.pan.y;
+  const baseX = Math.max(12, (cw - dw) / 2);
+  const baseY = Math.max(12, (ch - dh) / 2);
+  clampPan();
+  const x = baseX + state.pan.x;
+  const y = baseY + state.pan.y;
   state.displayRect = { x, y, w: dw, h: dh, imgW: rendered.width, imgH: rendered.height };
   vctx.drawImage(rendered, 0, 0, rendered.width, rendered.height, x, y, dw, dh);
 
