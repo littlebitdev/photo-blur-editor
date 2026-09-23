@@ -766,16 +766,34 @@ view.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const p = toImg(e.clientX, e.clientY, false);
   if (state.tool === "select") {
+    // 선택 도구에서는 기존 가림 영역을 누르면 편집하고,
+    // 빈 공간을 드래그하면 확대된 사진을 패닝합니다.
     if (!p) return;
     const [idx, mode] = hitTest(p);
-    state.selected = idx;
     if (idx >= 0) {
+      state.selected = idx;
       state.dragMode = mode;
       state.dragAnchor = p;
       state.dragBefore = snapshot();
       syncControls();
       view.setPointerCapture(e.pointerId);
+      redraw();
+      return;
     }
+
+    // 사진이 화면보다 클 때만 빈 공간 드래그로 패닝합니다.
+    const canPan = state.displayRect &&
+      (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
+    if (canPan) {
+      state.panAnchor = [e.clientX, e.clientY];
+      state.panStart = [e.clientX, e.clientY];
+      state.panMoved = false;
+      view.style.cursor = "grabbing";
+      view.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    state.selected = -1;
     redraw();
     return;
   }
@@ -815,14 +833,26 @@ view.addEventListener("pointermove", (e) => {
   } else if (state.drawing) {
     redraw();
   } else if (state.tool === "select") {
-    const [, mode] = hitTest(toImg(e.clientX, e.clientY, false));
-    view.style.cursor = mode === "move" ? "grab" : mode ? "nwse-resize" : "pointer";
+    const hoverPoint = toImg(e.clientX, e.clientY, false);
+    const [hoverIdx, mode] = hitTest(hoverPoint);
+    if (hoverIdx >= 0) {
+      view.style.cursor = mode === "move" ? "grab" : "nwse-resize";
+    } else {
+      const canPan = state.displayRect &&
+        (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
+      view.style.cursor = canPan ? "grab" : "pointer";
+    }
   }
 });
 
 window.addEventListener("pointerup", (e) => {
   if (!state.src) return;
-  if (state.panAnchor) { state.panAnchor = null; return; } // panMoved는 contextmenu 핸들러가 읽고 초기화합니다.
+  if (state.panAnchor) {
+    state.panAnchor = null;
+    state.panStart = null;
+    view.style.cursor = state.tool === "select" ? "pointer" : view.style.cursor;
+    return; // panMoved는 contextmenu 핸들러가 읽고 초기화합니다.
+  }
   const p = toImg(e.clientX, e.clientY, true);
   if (state.tool === "select") {
     if (state.dragBefore) commit(state.dragBefore);
