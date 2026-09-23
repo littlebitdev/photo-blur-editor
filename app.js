@@ -528,9 +528,14 @@ window.addEventListener("drop", (e) => {
 // 사진을 그대로 불러옵니다. 이미지가 아니면 아무 것도 하지 않아
 // 원래의 붙여넣기 동작(글자 입력칸 등)에 영향을 주지 않습니다.
 window.addEventListener("paste", (e) => {
-  if (document.querySelector(".modal-backdrop")) return; // 저장창 등이 열려 있으면 그 안 입력칸에 평소처럼 붙여넣게 둠
+  // 입력창/텍스트 영역에서는 브라우저의 기본 붙여넣기를 그대로 둡니다.
+  if (isTextFocus()) return;
+  if (document.querySelector(".modal-backdrop")) return;
+
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
+
+  // 1) 외부에서 복사한 이미지 → 사진으로 불러오기
   for (const item of items) {
     if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
       e.preventDefault();
@@ -539,7 +544,14 @@ window.addEventListener("paste", (e) => {
       return;
     }
   }
-  // 이미지가 아니면 손대지 않고 기본 붙여넣기 동작에 맡깁니다.
+
+  // 2) 이미지가 아니라면 프로그램 내부에서 Ctrl+C로 복사한 가림 영역 붙여넣기
+  //    기존에는 keydown에서 Ctrl+V를 가로채고 있었는데, 그러면 외부 이미지의
+  //    실제 paste 이벤트까지 막힐 수 있으므로 paste 이벤트에서 두 기능을 분기합니다.
+  if (state.clipboard) {
+    e.preventDefault();
+    pasteOp();
+  }
 });
 
 async function loadFile(file) {
@@ -1458,7 +1470,6 @@ window.addEventListener("keydown", (e) => {
   else if (ctrl && e.key.toLowerCase() === "s") { e.preventDefault(); openSaveDialog(); }
   else if (ctrl && e.key.toLowerCase() === "o") { e.preventDefault(); fileInput.click(); }
   else if (ctrl && e.key.toLowerCase() === "c") { e.preventDefault(); copySelected(); }
-  else if (ctrl && e.key.toLowerCase() === "v") { e.preventDefault(); pasteOp(); }
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
   else if (e.key === "Escape") { cancelCurrent(); }
