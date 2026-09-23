@@ -1077,27 +1077,17 @@ function openSaveDialog() {
   };
 }
 
-async function saveBlob(blob, suggestedName) {
-  if (window.showSaveFilePicker) {
-    try {
-      const ext = suggestedName.split(".").pop();
-      const handle = await window.showSaveFilePicker({
-        suggestedName,
-        types: [{ description: "이미지", accept: { [blob.type]: ["." + ext] } }],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-      return;
-    } catch (e) {
-      if (e && e.name === "AbortError") return;
-      // 실패 시 일반 다운로드로 대체
-    }
-  }
+function saveBlob(blob, suggestedName) {
+  // File System Access API(showSaveFilePicker)를 사용하지 않고
+  // 브라우저의 일반 다운로드 기능으로 저장합니다.
+  // 따라서 웹페이지가 사용자의 파일 시스템에 직접 쓰기 권한을 요청하지 않습니다.
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = suggestedName;
-  document.body.appendChild(a); a.click(); a.remove();
+  a.href = url;
+  a.download = suggestedName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
