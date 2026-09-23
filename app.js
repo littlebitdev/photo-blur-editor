@@ -766,34 +766,29 @@ view.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const p = toImg(e.clientX, e.clientY, false);
   if (state.tool === "select") {
-    // 선택 도구에서는 기존 가림 영역을 누르면 편집하고,
-    // 빈 공간을 드래그하면 확대된 사진을 패닝합니다.
     if (!p) return;
     const [idx, mode] = hitTest(p);
+    state.selected = idx;
+
     if (idx >= 0) {
-      state.selected = idx;
+      // 가림 영역 위에서는 기존처럼 영역 이동/크기 조절
       state.dragMode = mode;
       state.dragAnchor = p;
       state.dragBefore = snapshot();
       syncControls();
       view.setPointerCapture(e.pointerId);
-      redraw();
-      return;
+    } else {
+      // 확대되어 사진이 화면보다 큰 경우, 빈 사진 부분을 드래그하면 패닝
+      const canPan = state.displayRect &&
+        (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
+      if (canPan) {
+        state.panAnchor = [e.clientX, e.clientY];
+        state.panStart = [e.clientX, e.clientY];
+        state.panMoved = false;
+        view.setPointerCapture(e.pointerId);
+        view.style.cursor = "grabbing";
+      }
     }
-
-    // 사진이 화면보다 클 때만 빈 공간 드래그로 패닝합니다.
-    const canPan = state.displayRect &&
-      (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
-    if (canPan) {
-      state.panAnchor = [e.clientX, e.clientY];
-      state.panStart = [e.clientX, e.clientY];
-      state.panMoved = false;
-      view.style.cursor = "grabbing";
-      view.setPointerCapture(e.pointerId);
-      return;
-    }
-
-    state.selected = -1;
     redraw();
     return;
   }
@@ -833,15 +828,11 @@ view.addEventListener("pointermove", (e) => {
   } else if (state.drawing) {
     redraw();
   } else if (state.tool === "select") {
-    const hoverPoint = toImg(e.clientX, e.clientY, false);
-    const [hoverIdx, mode] = hitTest(hoverPoint);
-    if (hoverIdx >= 0) {
-      view.style.cursor = mode === "move" ? "grab" : "nwse-resize";
-    } else {
-      const canPan = state.displayRect &&
-        (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
-      view.style.cursor = canPan ? "grab" : "pointer";
-    }
+    const p2 = toImg(e.clientX, e.clientY, false);
+    const [, mode] = hitTest(p2);
+    const canPan = state.displayRect &&
+      (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
+    view.style.cursor = mode === "move" ? "grab" : mode ? "nwse-resize" : (canPan ? "grab" : "pointer");
   }
 });
 
@@ -850,8 +841,9 @@ window.addEventListener("pointerup", (e) => {
   if (state.panAnchor) {
     state.panAnchor = null;
     state.panStart = null;
-    view.style.cursor = state.tool === "select" ? "pointer" : view.style.cursor;
-    return; // panMoved는 contextmenu 핸들러가 읽고 초기화합니다.
+    state.panMoved = false;
+    if (state.tool === "select") view.style.cursor = "grab";
+    return;
   }
   const p = toImg(e.clientX, e.clientY, true);
   if (state.tool === "select") {
