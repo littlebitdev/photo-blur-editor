@@ -4,7 +4,7 @@
 //
 // 앱 코드(app.js)를 고칠 때는 아래 CACHE_NAME의 숫자를 올려 주세요.
 // 그래야 예전 캐시를 지우고 새 파일로 확실히 교체됩니다.
-const CACHE_NAME = "photo-blur-editor-v3";
+const CACHE_NAME = "photo-blur-editor-v4";
 
 // 페이지를 열자마자 항상 필요한 작은 파일만 미리 저장해 둡니다.
 // opencv.js처럼 큰 파일은 여기서 미리 받지 않고, 사용자가 실제로

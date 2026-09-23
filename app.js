@@ -38,6 +38,8 @@ const state = {
   dragAnchor: null,
   dragBefore: null,
   panAnchor: null,
+  panStart: null,
+  panMoved: false,
   displayRect: null,
 };
 
@@ -741,8 +743,11 @@ function modifySelected(p) {
 // ── 마우스 / 포인터 이벤트 ───────────────────────────────────────
 view.addEventListener("pointerdown", (e) => {
   if (!state.src) return;
+  wrap.focus(); // 이 영역에 초점을 둬서 Ctrl+V가 항상 확실히 동작하게 합니다.
   if (e.button === 1 || e.button === 2) {
     state.panAnchor = [e.clientX, e.clientY];
+    state.panStart = [e.clientX, e.clientY];
+    state.panMoved = false;
     view.setPointerCapture(e.pointerId);
     return;
   }
@@ -783,6 +788,9 @@ view.addEventListener("pointermove", (e) => {
     state.pan.x += e.clientX - state.panAnchor[0];
     state.pan.y += e.clientY - state.panAnchor[1];
     state.panAnchor = [e.clientX, e.clientY];
+    if (state.panStart && (Math.abs(e.clientX - state.panStart[0]) > 3 || Math.abs(e.clientY - state.panStart[1]) > 3)) {
+      state.panMoved = true;
+    }
     redraw();
     return;
   }
@@ -802,7 +810,7 @@ view.addEventListener("pointermove", (e) => {
 
 window.addEventListener("pointerup", (e) => {
   if (!state.src) return;
-  if (state.panAnchor) { state.panAnchor = null; return; }
+  if (state.panAnchor) { state.panAnchor = null; return; } // panMoved는 contextmenu 핸들러가 읽고 초기화합니다.
   const p = toImg(e.clientX, e.clientY, true);
   if (state.tool === "select") {
     if (state.dragBefore) commit(state.dragBefore);
@@ -830,7 +838,12 @@ window.addEventListener("pointerup", (e) => {
 });
 
 view.addEventListener("dblclick", () => { if (state.tool === "free") finishFree(); });
-wrap.addEventListener("contextmenu", (e) => e.preventDefault());
+// 오른쪽 버튼으로 실제로 드래그(화면 이동)했을 때만 뒤이어 뜨는 메뉴를 막고,
+// 그냥 오른쪽 클릭만 했을 때는 평소처럼 브라우저 메뉴(붙여넣기 등)가 뜨게 둡니다.
+wrap.addEventListener("contextmenu", (e) => {
+  if (state.panMoved) { e.preventDefault(); }
+  state.panMoved = false;
+});
 
 function finishFree() {
   if (state.tool === "free" && state.drawing && state.freePoints.length >= 3) {
