@@ -980,7 +980,7 @@ function openSaveDialog() {
   const w = state.src.width, h = state.src.height;
   const ratio = w / h;
   const webpOK = supportsWebP();
-  const defaultFmt = webpOK ? "webp" : "jpeg";
+  const defaultFmt = "jpeg";
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
@@ -999,7 +999,7 @@ function openSaveDialog() {
       <h3 style="margin-top:4px;">파일 형식</h3>
       <label class="radio"><input type="radio" name="szfmt" value="webp" ${defaultFmt === "webp" ? "checked" : ""} ${webpOK ? "" : "disabled"}>
         WebP — 용량을 크게 줄이면서 화질 차이는 거의 없음 (추천)${webpOK ? "" : " · 이 브라우저에서는 지원하지 않음"}</label>
-      <label class="radio"><input type="radio" name="szfmt" value="jpeg" ${defaultFmt === "jpeg" ? "checked" : ""}> JPEG — 문서·이메일 첨부 시 호환성이 가장 좋음</label>
+      <label class="radio"><input type="radio" name="szfmt" value="jpeg" ${defaultFmt === "jpeg" ? "checked" : ""}> JPG (JPEG) — 문서·한글 파일에 넣을 때 호환성이 좋음</label>
       <label class="radio"><input type="radio" name="szfmt" value="png"> PNG — 무손실이라 용량이 가장 큼</label>
 
       <div class="size-row" id="qualityRow">
