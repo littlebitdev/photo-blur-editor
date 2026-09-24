@@ -527,7 +527,19 @@ window.addEventListener("drop", (e) => {
 // 클립보드 붙여넣기(Ctrl+V) — 한글 문서·인터넷·탐색기 등에서 복사한
 // 사진을 그대로 불러옵니다. 이미지가 아니면 아무 것도 하지 않아
 // 원래의 붙여넣기 동작(글자 입력칸 등)에 영향을 주지 않습니다.
+// 내부 가림 영역 복사 후 Ctrl+V는 시스템 클립보드에 실제 데이터를 넣지 않으므로
+// 브라우저가 paste 이벤트 자체를 발생시키지 않을 수 있습니다.
+// 따라서 Ctrl+V에서는 짧은 지연 후 내부 붙여넣기를 보조 실행하고,
+// 실제 paste 이벤트가 들어오면 외부 이미지 붙여넣기를 우선 처리합니다.
+let pasteFallbackTimer = null;
+
 window.addEventListener("paste", (e) => {
+  // 실제 paste 이벤트가 발생했다면 keydown의 보조 타이머를 취소합니다.
+  if (pasteFallbackTimer) {
+    clearTimeout(pasteFallbackTimer);
+    pasteFallbackTimer = null;
+  }
+
   // 입력창/텍스트 영역에서는 브라우저의 기본 붙여넣기를 그대로 둡니다.
   if (isTextFocus()) return;
   if (document.querySelector(".modal-backdrop")) return;
@@ -546,8 +558,6 @@ window.addEventListener("paste", (e) => {
   }
 
   // 2) 이미지가 아니라면 프로그램 내부에서 Ctrl+C로 복사한 가림 영역 붙여넣기
-  //    기존에는 keydown에서 Ctrl+V를 가로채고 있었는데, 그러면 외부 이미지의
-  //    실제 paste 이벤트까지 막힐 수 있으므로 paste 이벤트에서 두 기능을 분기합니다.
   if (state.clipboard) {
     e.preventDefault();
     pasteOp();
@@ -1524,6 +1534,19 @@ window.addEventListener("keydown", (e) => {
   else if (ctrl && e.key.toLowerCase() === "s") { e.preventDefault(); openSaveDialog(); }
   else if (ctrl && e.key.toLowerCase() === "o") { e.preventDefault(); fileInput.click(); }
   else if (ctrl && e.key.toLowerCase() === "c") { e.preventDefault(); copySelected(); }
+  else if (ctrl && e.key.toLowerCase() === "v") {
+    // 내부 가림 영역 복사본은 시스템 클립보드에 저장하지 않으므로
+    // 브라우저가 paste 이벤트를 보내지 않는 경우가 있습니다.
+    // 외부 이미지가 실제로 붙여넣어지는 경우에는 paste 이벤트가 먼저
+    // 실행되어 이 타이머를 취소하므로 이미지 붙여넣기는 그대로 유지됩니다.
+    if (state.clipboard) {
+      if (pasteFallbackTimer) clearTimeout(pasteFallbackTimer);
+      pasteFallbackTimer = setTimeout(() => {
+        pasteFallbackTimer = null;
+        if (!isTextFocus() && !document.querySelector(".modal-backdrop")) pasteOp();
+      }, 0);
+    }
+  }
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
   else if (e.key === "Escape") { cancelCurrent(); }
