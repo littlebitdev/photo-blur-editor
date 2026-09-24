@@ -1154,7 +1154,7 @@ function openSaveDialog() {
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <div class="modal">
-      <h3>저장 크기</h3>
+      <h3>저장·복사 크기</h3>
       <label class="radio"><input type="radio" name="szmode" value="original"> 원본 크기 그대로  (${w} × ${h}px)</label>
       <label class="radio"><input type="radio" name="szmode" value="custom" checked> 크기 지정</label>
       <div class="size-row">
@@ -1177,8 +1177,11 @@ function openSaveDialog() {
       </div>
       <p class="tip">숫자가 낮을수록 파일은 작아지지만 화질도 함께 낮아집니다. 90 안팎이면 눈으로는 원본과 거의 구분되지 않으면서 용량은 크게 줄어듭니다.</p>
 
+      <p class="tip">‘클립보드에 복사’는 위에서 고른 크기로 복사되며, 형식은 항상 PNG입니다. (파일 형식·압축률은 저장에만 적용됩니다.)</p>
+
       <div class="btns">
         <button id="szCancel">취소</button>
+        <button id="szCopy" title="가림 결과 사진을 클립보드에 복사합니다">클립보드에 복사</button>
         <button id="szOk" class="btn-primary">저장</button>
       </div>
     </div>`;
@@ -1229,19 +1232,28 @@ function openSaveDialog() {
   window.addEventListener("keydown", onEsc, true);
   backdrop.querySelector("#szCancel").onclick = closeDialog;
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeDialog(); });
-  backdrop.querySelector("#szOk").onclick = () => {
+  // 선택한 크기 읽기: 원본이면 null, 크기 지정이면 [가로, 세로], 값이 잘못됐으면 false
+  const readTarget = () => {
     const mode = backdrop.querySelector('input[name="szmode"]:checked').value;
-    let target = null;
-    if (mode === "custom") {
-      const tw = clamp(Math.max(1, Math.round(parseFloat(szW.value))), 1, w);
-      const th = clamp(Math.max(1, Math.round(parseFloat(szH.value))), 1, h);
-      if (!tw || !th) { alert("가로/세로 값을 확인해 주세요."); return; }
-      target = [tw, th];
-    }
+    if (mode !== "custom") return null;
+    const tw = clamp(Math.max(1, Math.round(parseFloat(szW.value))), 1, w);
+    const th = clamp(Math.max(1, Math.round(parseFloat(szH.value))), 1, h);
+    if (!tw || !th) { alert("가로/세로 값을 확인해 주세요."); return false; }
+    return [tw, th];
+  };
+  backdrop.querySelector("#szOk").onclick = () => {
+    const target = readTarget();
+    if (target === false) return;
     const format = backdrop.querySelector('input[name="szfmt"]:checked').value;
     const quality = parseInt(szQuality.value, 10) / 100;
     closeDialog();
     doSave(target, format, quality);
+  };
+  backdrop.querySelector("#szCopy").onclick = () => {
+    const target = readTarget();
+    if (target === false) return;
+    closeDialog();
+    doCopy(target);   // 클릭 직후 바로 호출해야 브라우저가 클립보드 쓰기를 허용합니다
   };
 }
 
@@ -1269,12 +1281,40 @@ function flattenOnWhite(canvas) {
   return out;
 }
 
-function doSave(targetSize, format = "png", quality = 0.92) {
+// 저장·복사에 공통으로 쓰는 결과 사진 만들기 (가림 적용 → 필요하면 리사이즈)
+function buildOutputCanvas(targetSize) {
   const rendered = render();
-  let finalCanvas = rendered;
   if (targetSize && (targetSize[0] !== rendered.width || targetSize[1] !== rendered.height)) {
-    finalCanvas = highQualityResize(rendered, targetSize[0], targetSize[1]);
+    return highQualityResize(rendered, targetSize[0], targetSize[1]);
   }
+  return rendered;
+}
+
+// 결과 사진을 클립보드에 복사 — 크기는 저장과 같고, 형식은 클립보드가 안정적으로 받는 PNG 고정
+function doCopy(targetSize) {
+  if (!navigator.clipboard || !navigator.clipboard.write || typeof window.ClipboardItem === "undefined") {
+    toast("이 브라우저는 사진 복사를 지원하지 않습니다. 저장을 이용해 주세요.");
+    return;
+  }
+  const canvas = buildOutputCanvas(targetSize);
+  toast("클립보드에 복사하는 중입니다…");
+  // 사진을 만드는 동안에도 '클릭 직후' 상태가 유지되도록 Promise 형태로 넘깁니다.
+  const blobPromise = new Promise((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("encode failed"))), "image/png");
+  });
+  navigator.clipboard.write([new window.ClipboardItem({ "image/png": blobPromise })])
+    .then(() => blobPromise)
+    .then((blob) => {
+      const kb = (blob.size / 1024).toFixed(0);
+      toast(`클립보드에 복사했습니다 · ${canvas.width} × ${canvas.height}px · PNG 약 ${kb}KB`);
+    })
+    .catch(() => {
+      toast("복사하지 못했습니다. 브라우저의 클립보드 권한을 확인하거나 저장을 이용해 주세요.");
+    });
+}
+
+function doSave(targetSize, format = "png", quality = 0.92) {
+  let finalCanvas = buildOutputCanvas(targetSize);
   // JPG는 투명을 지원하지 않아 투명한 부분이 검게 저장되므로, 흰 배경 위에 얹어서 저장합니다.
   if (format === "jpeg") finalCanvas = flattenOnWhite(finalCanvas);
   const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
