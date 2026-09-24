@@ -192,6 +192,18 @@ function applyOp(outCanvas, ctx, op) {
   ctx.drawImage(composed, px1, py1);
 }
 
+// 화면 그리기용 캐시 — 사진(회전 포함)과 가림 영역이 그대로면 이미 만든 결과를 다시 씁니다.
+// (패닝·확대·마우스 호버처럼 내용이 안 바뀌는 다시 그리기를 가볍게 하기 위함. 저장은 항상 render()로 새로 만듭니다)
+const renderCache = { src: null, key: "", canvas: null };
+function renderCached() {
+  if (!state.src) return null;
+  const key = JSON.stringify(state.ops);
+  if (renderCache.canvas && renderCache.src === state.src && renderCache.key === key) return renderCache.canvas;
+  const canvas = render();
+  renderCache.src = state.src; renderCache.key = key; renderCache.canvas = canvas;
+  return canvas;
+}
+
 function render() {
   if (!state.src) return null;
   const out = document.createElement("canvas");
@@ -458,7 +470,6 @@ const rotateLeftBtn = document.getElementById("rotateLeftBtn");
 const rotateRightBtn = document.getElementById("rotateRightBtn");
 if (rotateLeftBtn) rotateLeftBtn.onclick = () => rotate(false);
 if (rotateRightBtn) rotateRightBtn.onclick = () => rotate(true);
-if (redoBtnHeader) redoBtnHeader.onclick = redo;
 
 function setTool(v) {
   state.tool = v;
@@ -529,6 +540,9 @@ window.addEventListener("drop", (e) => {
   if (f && f.type.startsWith("image/")) loadFile(f);
 });
 
+// 내부에서 복사한 가림 영역임을 알리는 표식 글자(시스템 클립보드에 기록됨)
+const OP_CLIP_MARK = "[사진 가림 편집기] 가림 영역 복사됨";
+
 // 클립보드 붙여넣기(Ctrl+V) — 한글 문서·인터넷·탐색기 등에서 복사한
 // 사진을 그대로 불러옵니다. 이미지가 아니면 아무 것도 하지 않아
 // 원래의 붙여넣기 동작(글자 입력칸 등)에 영향을 주지 않습니다.
@@ -570,13 +584,10 @@ window.addEventListener("paste", (e) => {
 // 가림 영역 Ctrl+C 시 시스템 클립보드를 "표식 글자"로 바꿔 둡니다.
 // → 그 전에 복사해 둔 사진이 클립보드에 남아 있다가 Ctrl+V 때 딸려 들어오는 것을 막고,
 //   나중에 다른 곳에서 사진을 새로 복사하면 그 사진이 정상적으로 우선됩니다.
-const OP_CLIP_MARK = "[사진 가림 편집기] 가림 영역 복사됨";
 let pendingOpCopy = false;
-let opCopyEventSeen = false;
 window.addEventListener("copy", (e) => {
   if (!pendingOpCopy || isTextFocus()) return;
   pendingOpCopy = false;
-  opCopyEventSeen = true;
   if (e.clipboardData) {
     e.clipboardData.setData("text/plain", OP_CLIP_MARK);
     e.preventDefault();
@@ -584,7 +595,6 @@ window.addEventListener("copy", (e) => {
 });
 function markOpCopy() {
   pendingOpCopy = true;
-  opCopyEventSeen = false;
 }
 // 클립보드 API(navigator.clipboard)를 쓰면 크롬이 "클립보드 확인" 권한 창을 띄우므로,
 // 보이지 않는 임시 입력칸에 표식 글자를 넣고 브라우저의 기본 복사 명령으로 복사합니다.
@@ -642,10 +652,10 @@ function fitView() {
 function getViewMetrics() {
   const cw = Math.max(1, wrap.clientWidth);
   const ch = Math.max(1, wrap.clientHeight);
-  const rendered = state.src ? render() : null;
-  if (!rendered) return null;
-  const dw = rendered.width * state.zoom;
-  const dh = rendered.height * state.zoom;
+  if (!state.src) return null;
+  // 화면 크기 계산에는 사진 크기만 필요하므로 무거운 렌더링을 하지 않습니다.
+  const dw = state.src.width * state.zoom;
+  const dh = state.src.height * state.zoom;
   const baseX = Math.max(12, (cw - dw) / 2);
   const baseY = Math.max(12, (ch - dh) / 2);
   return { cw, ch, dw, dh, baseX, baseY };
@@ -677,9 +687,25 @@ function clampPan() {
   }
 }
 
-function changeZoom(mult) {
+// anchorX/anchorY: 확대·축소해도 그 자리에 그대로 있어야 하는 화면 위치(wrap 기준 px). 생략하면 화면 중앙.
+function changeZoom(mult, anchorX, anchorY) {
   if (!state.src) return;
+  const cw = Math.max(1, wrap.clientWidth), ch = Math.max(1, wrap.clientHeight);
+  const ax = anchorX === undefined ? cw / 2 : anchorX;
+  const ay = anchorY === undefined ? ch / 2 : anchorY;
+  const old = state.displayRect;
+  const oldZoom = state.zoom;
+  // 기준 위치 아래에 있던 사진 좌표
+  const ix = old ? (ax - old.x) / oldZoom : null;
+  const iy = old ? (ay - old.y) / oldZoom : null;
+
   state.zoom = Math.max(0.05, Math.min(6, state.zoom * mult));
+  if (old) {
+    const dw = state.src.width * state.zoom, dh = state.src.height * state.zoom;
+    const baseX = Math.max(12, (cw - dw) / 2), baseY = Math.max(12, (ch - dh) / 2);
+    state.pan.x = ax - ix * state.zoom - baseX;   // 그 사진 좌표가 다시 같은 화면 위치에 오도록
+    state.pan.y = ay - iy * state.zoom - baseY;
+  }
   clampPan();
   $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
   redraw();
@@ -690,7 +716,8 @@ $("zoomOut").onclick = () => changeZoom(1 / 1.2);
 wrap.addEventListener("wheel", (e) => {
   if (!state.src) return;
   e.preventDefault();
-  changeZoom(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  const r = wrap.getBoundingClientRect();
+  changeZoom(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - r.left, e.clientY - r.top);
 }, { passive: false });
 window.addEventListener("resize", () => redraw());
 
@@ -711,7 +738,7 @@ function redraw() {
   vctx.clearRect(0, 0, cw, ch);
   if (!state.src) { state.displayRect = null; return; }
 
-  const rendered = render();
+  const rendered = renderCached();
   const dw = rendered.width * state.zoom, dh = rendered.height * state.zoom;
   const baseX = Math.max(12, (cw - dw) / 2);
   const baseY = Math.max(12, (ch - dh) / 2);
@@ -1139,8 +1166,8 @@ function openSaveDialog() {
 
       <h3 style="margin-top:4px;">파일 형식</h3>
       <label class="radio"><input type="radio" name="szfmt" value="webp" ${defaultFmt === "webp" ? "checked" : ""} ${webpOK ? "" : "disabled"}>
-        WebP — 용량을 크게 줄이면서 화질 차이는 거의 없음 (추천)${webpOK ? "" : " · 이 브라우저에서는 지원하지 않음"}</label>
-      <label class="radio"><input type="radio" name="szfmt" value="jpeg" ${defaultFmt === "jpeg" ? "checked" : ""}> JPG (JPEG) — 문서·한글 파일에 넣을 때 호환성이 좋음</label>
+        WebP — 용량을 크게 줄이면서 화질 차이는 거의 없음${webpOK ? "" : " · 이 브라우저에서는 지원하지 않음"}</label>
+      <label class="radio"><input type="radio" name="szfmt" value="jpeg" ${defaultFmt === "jpeg" ? "checked" : ""}> JPG (JPEG) — 문서·한글 파일에 넣을 때 호환성이 좋음 (추천)</label>
       <label class="radio"><input type="radio" name="szfmt" value="png"> PNG — 무손실이라 용량이 가장 큼</label>
 
       <div class="size-row" id="qualityRow">
@@ -1232,19 +1259,31 @@ function saveBlob(blob, suggestedName) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+function flattenOnWhite(canvas) {
+  const out = document.createElement("canvas");
+  out.width = canvas.width; out.height = canvas.height;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, 0, 0);
+  return out;
+}
+
 function doSave(targetSize, format = "png", quality = 0.92) {
   const rendered = render();
   let finalCanvas = rendered;
   if (targetSize && (targetSize[0] !== rendered.width || targetSize[1] !== rendered.height)) {
     finalCanvas = highQualityResize(rendered, targetSize[0], targetSize[1]);
   }
+  // JPG는 투명을 지원하지 않아 투명한 부분이 검게 저장되므로, 흰 배경 위에 얹어서 저장합니다.
+  if (format === "jpeg") finalCanvas = flattenOnWhite(finalCanvas);
   const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
   const ext = format === "jpeg" ? "jpg" : format === "webp" ? "webp" : "png";
   const tag = targetSize ? `_${targetSize[0]}x${targetSize[1]}` : "";
   const name = `${state.filenameStem}_가림${tag}.${ext}`;
-  finalCanvas.toBlob(async (blob) => {
+  finalCanvas.toBlob((blob) => {
     if (!blob) { toast("저장하지 못했습니다. 다른 형식으로 다시 시도해 주세요."); return; }
-    await saveBlob(blob, name);
+    saveBlob(blob, name);
     const kb = (blob.size / 1024).toFixed(0);
     toast(`저장했습니다 · ${finalCanvas.width} × ${finalCanvas.height}px · 약 ${kb}KB`);
   }, mime, format === "png" ? undefined : quality);

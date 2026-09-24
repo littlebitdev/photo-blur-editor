@@ -8,7 +8,7 @@
 
 1. 깃허브에 새 저장소(repository)를 만듭니다. (예: `photo-blur-editor`)
 2. 이 폴더 안의 파일 **6개를 전부** 저장소에 그대로 올립니다(업로드 또는 `git push`): `index.html`, `app.js`, `sw.js`, `opencv.js`, `face_detection_yunet.onnx`, `haarcascade_frontalface_default.xml`
-   - 나중에 `app.js`를 다시 고쳐서 올릴 일이 있으면, `sw.js` 맨 위의 `CACHE_NAME` 숫자도 하나 올려주세요(`v1` → `v2`). 이 숫자를 안 올리면 방문자 브라우저에 저장돼 있던 예전 파일이 계속 쓰일 수 있습니다.
+   - 나중에 `index.html`/`app.js`만 고쳐서 올릴 때는 새로고침 한 번이면 새 버전이 반영됩니다(이 두 파일은 인터넷이 되면 항상 최신본을 받습니다). `opencv.js`나 인식 모델 파일을 바꿨을 때만 `sw.js` 맨 위의 `CACHE_NAME` 숫자를 하나 올려 주세요.
    - `haarcascade_frontalface_default.xml`은 지금 쓰는 opencv.js(5.0.0)에는 실제로 없는 기능(Haar cascade)을 위한 예비 파일이라, **지금 당장은 안 올려도 프로그램이 그대로 잘 동작합니다.** 나중에 opencv.js가 이 기능을 지원하는 버전으로 바뀌는 경우를 대비해 남겨뒀을 뿐이고, 코드도 이 파일이 실제로 필요할 때만(YuNet을 못 쓸 때만) 불러오도록 되어 있어 평소엔 아예 받아오지도 않습니다. 저장소를 최대한 간단히 하고 싶으시면 이 파일은 빼셔도 됩니다.
    - `opencv.js`는 13MB 정도로 큰 파일입니다. 깃허브 웹 화면에서 파일을 끌어다 놓는 방식은 한 번에 25MB까지는 되니 문제없지만, 업로드가 느릴 수 있습니다.
 3. 저장소의 **Settings → Pages** 로 들어갑니다.
