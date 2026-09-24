@@ -1177,7 +1177,7 @@ function openSaveDialog() {
       </div>
       <p class="tip">숫자가 낮을수록 파일은 작아지지만 화질도 함께 낮아집니다. 90 안팎이면 눈으로는 원본과 거의 구분되지 않으면서 용량은 크게 줄어듭니다.</p>
 
-      <p class="tip">‘클립보드에 복사’는 위에서 고른 크기·형식·압축률로 복사됩니다. 다만 클립보드는 브라우저에 따라 PNG만 받는 경우가 있어, 그럴 때는 자동으로 PNG로 복사됩니다.</p>
+      <p class="tip">‘클립보드에 복사’는 위에서 고른 크기로 복사되며, 형식은 항상 PNG입니다. (파일 형식·압축률은 저장에만 적용됩니다.)</p>
 
       <div class="btns">
         <button id="szCancel">취소</button>
@@ -1252,10 +1252,8 @@ function openSaveDialog() {
   backdrop.querySelector("#szCopy").onclick = () => {
     const target = readTarget();
     if (target === false) return;
-    const format = backdrop.querySelector('input[name="szfmt"]:checked').value;
-    const quality = parseInt(szQuality.value, 10) / 100;
     closeDialog();
-    doCopy(target, format, quality);   // 클릭 직후 바로 호출해야 브라우저가 클립보드 쓰기를 허용합니다
+    doCopy(target);   // 클릭 직후 바로 호출해야 브라우저가 클립보드 쓰기를 허용합니다
   };
 }
 
@@ -1295,42 +1293,24 @@ function buildOutputCanvas(targetSize) {
 // 결과 사진을 클립보드에 복사 — 크기·형식·압축률은 저장과 같은 값을 먼저 시도하고,
 // 이 브라우저가 그 형식의 클립보드 복사를 지원하지 않으면 누구나 받는 PNG로 자동 전환합니다.
 // (형식이 다르면 클립보드에 남는 사진의 실제 용량도 달라지므로, JPG/WebP가 되면 더 작은 용량으로 복사됩니다.)
-function encodeBlob(canvas, format, quality) {
-  const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve({ blob: b, mime }) : reject(new Error("encode failed"))), mime, format === "png" ? undefined : quality);
-  });
-}
-function doCopy(targetSize, format = "png", quality = 0.92) {
+// 결과 사진을 클립보드에 복사 — 크기는 저장과 같고, 형식은 클립보드가 안정적으로 받는 PNG 고정
+// (JPG/WebP 클립보드 복사는 현재 웹 표준이 보장하지 않아 대부분의 브라우저에서 거부됩니다.)
+function doCopy(targetSize) {
   if (!navigator.clipboard || !navigator.clipboard.write || typeof window.ClipboardItem === "undefined") {
     toast("이 브라우저는 사진 복사를 지원하지 않습니다. 저장을 이용해 주세요.");
     return;
   }
   const canvas = buildOutputCanvas(targetSize);
-  // JPG는 투명을 지원하지 않아 투명한 부분이 검게 복사되므로, 흰 배경 위에 얹습니다. (저장과 동일한 처리)
-  // PNG로 넘어갈 때는 원본(canvas)을 그대로 써서 투명을 유지합니다.
-  const jpegSource = format === "jpeg" ? flattenOnWhite(canvas) : canvas;
   toast("클립보드에 복사하는 중입니다…");
-
-  const tryWrite = (fmt) => {
-    const source = fmt === "jpeg" ? jpegSource : canvas;
-    // 사진을 만드는 동안에도 '클릭 직후' 상태가 유지되도록 Promise 형태로 clipboard.write에 즉시 넘깁니다.
-    let encoded = null;
-    const blobPromise = encodeBlob(source, fmt, quality).then((r) => { encoded = r; return r.blob; });
-    return navigator.clipboard.write([new window.ClipboardItem({ [fmt === "jpeg" ? "image/jpeg" : fmt === "webp" ? "image/webp" : "image/png"]: blobPromise })])
-      .then(() => blobPromise.then(() => encoded));
-  };
-
-  tryWrite(format)
-    .catch((err) => {
-      if (format === "png") throw err;   // 이미 PNG였다면 더 물러설 곳이 없습니다
-      return tryWrite("png");            // 선택한 형식이 안 되면 PNG로 다시 시도
-    })
-    .then((encoded) => {
-      const kb = (encoded.blob.size / 1024).toFixed(0);
-      const label = encoded.mime === "image/jpeg" ? "JPG" : encoded.mime === "image/webp" ? "WebP" : "PNG";
-      const note = encoded.mime === "image/png" && format !== "png" ? " (이 브라우저는 PNG만 지원해 PNG로 복사됨)" : "";
-      toast(`클립보드에 복사했습니다 · ${canvas.width} × ${canvas.height}px · ${label} 약 ${kb}KB${note}`);
+  // 사진을 만드는 동안에도 '클릭 직후' 상태가 유지되도록 Promise 형태로 넘깁니다.
+  const blobPromise = new Promise((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("encode failed"))), "image/png");
+  });
+  navigator.clipboard.write([new window.ClipboardItem({ "image/png": blobPromise })])
+    .then(() => blobPromise)
+    .then((blob) => {
+      const kb = (blob.size / 1024).toFixed(0);
+      toast(`클립보드에 복사했습니다 · ${canvas.width} × ${canvas.height}px · PNG 약 ${kb}KB`);
     })
     .catch(() => {
       toast("복사하지 못했습니다. 브라우저의 클립보드 권한을 확인하거나 저장을 이용해 주세요.");
