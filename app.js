@@ -527,25 +527,23 @@ window.addEventListener("drop", (e) => {
 // 클립보드 붙여넣기(Ctrl+V) — 한글 문서·인터넷·탐색기 등에서 복사한
 // 사진을 그대로 불러옵니다. 이미지가 아니면 아무 것도 하지 않아
 // 원래의 붙여넣기 동작(글자 입력칸 등)에 영향을 주지 않습니다.
-// 내부 가림 영역 복사 후 Ctrl+V는 시스템 클립보드에 실제 데이터를 넣지 않으므로
-// 브라우저가 paste 이벤트 자체를 발생시키지 않을 수 있습니다.
-// 따라서 Ctrl+V에서는 짧은 지연 후 내부 붙여넣기를 보조 실행하고,
-// 실제 paste 이벤트가 들어오면 외부 이미지 붙여넣기를 우선 처리합니다.
-let pasteFallbackTimer = null;
-
 window.addEventListener("paste", (e) => {
-  // 실제 paste 이벤트가 발생했다면 keydown의 보조 타이머를 취소합니다.
-  if (pasteFallbackTimer) {
-    clearTimeout(pasteFallbackTimer);
-    pasteFallbackTimer = null;
-  }
-
   // 입력창/텍스트 영역에서는 브라우저의 기본 붙여넣기를 그대로 둡니다.
   if (isTextFocus()) return;
   if (document.querySelector(".modal-backdrop")) return;
 
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
+
+  // 0) 이 프로그램에서 Ctrl+C 로 복사한 가림 영역이면(표식 글자로 판별)
+  //    시스템 클립보드에 예전 사진이 남아 있어도 사진을 새로 불러오지 않고
+  //    가림 영역만 붙여넣습니다. (사진을 불러오면 작업한 영역이 사라지므로)
+  const text = e.clipboardData.getData("text/plain");
+  if (state.clipboard && text === OP_CLIP_MARK) {
+    e.preventDefault();
+    pasteOp();
+    return;
+  }
 
   // 1) 외부에서 복사한 이미지 → 사진으로 불러오기
   for (const item of items) {
@@ -557,12 +555,39 @@ window.addEventListener("paste", (e) => {
     }
   }
 
-  // 2) 이미지가 아니라면 프로그램 내부에서 Ctrl+C로 복사한 가림 영역 붙여넣기
+  // 2) 이미지가 아니라면 프로그램 내부에서 복사해 둔 가림 영역 붙여넣기(예전 동작 유지)
   if (state.clipboard) {
     e.preventDefault();
     pasteOp();
   }
 });
+
+// 가림 영역 Ctrl+C 시 시스템 클립보드를 "표식 글자"로 바꿔 둡니다.
+// → 그 전에 복사해 둔 사진이 클립보드에 남아 있다가 Ctrl+V 때 딸려 들어오는 것을 막고,
+//   나중에 다른 곳에서 사진을 새로 복사하면 그 사진이 정상적으로 우선됩니다.
+const OP_CLIP_MARK = "[사진 가림 편집기] 가림 영역 복사됨";
+let pendingOpCopy = false;
+let opCopyEventSeen = false;
+window.addEventListener("copy", (e) => {
+  if (!pendingOpCopy || isTextFocus()) return;
+  pendingOpCopy = false;
+  opCopyEventSeen = true;
+  if (e.clipboardData) {
+    e.clipboardData.setData("text/plain", OP_CLIP_MARK);
+    e.preventDefault();
+  }
+});
+function markOpCopy() {
+  pendingOpCopy = true;
+  opCopyEventSeen = false;
+  // 브라우저가 copy 이벤트를 보내지 않는 경우를 위한 보조 수단
+  setTimeout(() => {
+    pendingOpCopy = false;
+    if (!opCopyEventSeen && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(OP_CLIP_MARK).catch(() => {});
+    }
+  }, 120);
+}
 
 async function loadFile(file) {
   try {
@@ -1533,19 +1558,12 @@ window.addEventListener("keydown", (e) => {
   else if (ctrl && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
   else if (ctrl && e.key.toLowerCase() === "s") { e.preventDefault(); openSaveDialog(); }
   else if (ctrl && e.key.toLowerCase() === "o") { e.preventDefault(); fileInput.click(); }
-  else if (ctrl && e.key.toLowerCase() === "c") { e.preventDefault(); copySelected(); }
-  else if (ctrl && e.key.toLowerCase() === "v") {
-    // 내부 가림 영역 복사본은 시스템 클립보드에 저장하지 않으므로
-    // 브라우저가 paste 이벤트를 보내지 않는 경우가 있습니다.
-    // 외부 이미지가 실제로 붙여넣어지는 경우에는 paste 이벤트가 먼저
-    // 실행되어 이 타이머를 취소하므로 이미지 붙여넣기는 그대로 유지됩니다.
-    if (state.clipboard) {
-      if (pasteFallbackTimer) clearTimeout(pasteFallbackTimer);
-      pasteFallbackTimer = setTimeout(() => {
-        pasteFallbackTimer = null;
-        if (!isTextFocus() && !document.querySelector(".modal-backdrop")) pasteOp();
-      }, 0);
-    }
+  else if (ctrl && e.key.toLowerCase() === "c") {
+    // preventDefault 를 하지 않아야 브라우저의 copy 이벤트가 발생해 클립보드가 갱신됩니다.
+    const hadSel = state.selected >= 0 && state.selected < state.ops.length;
+    copySelected();
+    if (hadSel) markOpCopy();
+    else e.preventDefault();
   }
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
