@@ -22,6 +22,8 @@ const state = {
   filenameStem: "사진",
   ops: [],
   selected: -1,
+  hover: -1,          // 마우스를 올려 둔 영역(선택 도구일 때만)
+  showOutlines: true, // 모든 가림 영역의 얇은 테두리·번호 표시 여부
   clipboard: null,
   undoStack: [],
   redoStack: [],
@@ -289,6 +291,7 @@ function commit(before) {
 function restore(snap) {
   state.ops = JSON.parse(JSON.stringify(snap.ops));
   state.selected = snap.selected < state.ops.length ? snap.selected : -1;
+  state.hover = -1;
   if (snap.rotation !== state.rotation) {
     state.rotation = snap.rotation;
     deriveSrc();
@@ -322,6 +325,7 @@ function deleteSelected() {
   const before = snapshot();
   state.ops.splice(state.selected, 1);
   state.selected = -1;
+  state.hover = -1;
   commit(before);
   redraw();
 }
@@ -458,6 +462,7 @@ if (redoBtnHeader) redoBtnHeader.onclick = redo;
 
 function setTool(v) {
   state.tool = v;
+  state.hover = -1;
   state.freePoints = [];
   state.drawing = false;
   for (const [k, b] of Object.entries(toolButtons)) b.classList.toggle("active", k === v);
@@ -716,8 +721,73 @@ function redraw() {
   state.displayRect = { x, y, w: dw, h: dh, imgW: rendered.width, imgH: rendered.height };
   vctx.drawImage(rendered, 0, 0, rendered.width, rendered.height, x, y, dw, dh);
 
+  drawOutlines();
   drawSelection();
   drawPending();
+}
+
+// 가림 영역 표시 — 선택된 영역과 나머지를 구분합니다. (화면 미리보기 전용, 저장 결과에는 나오지 않습니다)
+//  · 나머지 영역: 얇은 테두리 + 번호   · 마우스를 올린 영역: 미리 강조   · 선택 영역: drawSelection()
+function opPathOnView(op) {
+  const { x: ox, y: oy } = state.displayRect;
+  const z = state.zoom;
+  vctx.beginPath();
+  if (op.type === "free") {
+    polyPathOn(vctx, op.points.map(([px, py]) => [ox + px * z, oy + py * z]));
+  } else {
+    const [bx1, by1, bx2, by2] = opBBox(op);
+    const x1 = ox + bx1 * z, y1 = oy + by1 * z, x2 = ox + bx2 * z, y2 = oy + by2 * z;
+    if (op.type === "ellipse") ellipsePathOn(vctx, x1, y1, x2, y2);
+    else vctx.rect(x1, y1, x2 - x1, y2 - y1);
+  }
+}
+function drawBadge(n, x, y, kind) {
+  const label = String(n);
+  vctx.save();
+  vctx.font = "700 12px system-ui, -apple-system, 'Malgun Gothic', sans-serif";
+  vctx.textBaseline = "middle";
+  const w = Math.max(20, vctx.measureText(label).width + 10), h = 18;
+  vctx.fillStyle = kind === "normal" ? "rgba(30,30,30,0.72)" : ACCENT;
+  vctx.beginPath();
+  if (vctx.roundRect) vctx.roundRect(x, y, w, h, 5); else vctx.rect(x, y, w, h);
+  vctx.fill();
+  vctx.strokeStyle = "rgba(255,255,255,0.9)";
+  vctx.lineWidth = 1;
+  vctx.stroke();
+  vctx.fillStyle = "#fff";
+  vctx.textAlign = "center";
+  vctx.fillText(label, x + w / 2, y + h / 2 + 0.5);
+  vctx.restore();
+}
+function drawOutlines() {
+  if (!state.showOutlines || !state.displayRect || !state.ops.length) return;
+  const { x: ox, y: oy } = state.displayRect;
+  const z = state.zoom;
+  const hover = state.hover >= 0 && state.hover < state.ops.length ? state.hover : -1;
+  vctx.save();
+  vctx.lineJoin = "round";
+  state.ops.forEach((op, i) => {
+    if (i === state.selected) return;             // 선택 영역은 drawSelection()이 그림
+    opPathOnView(op);
+    if (i === hover) {
+      vctx.fillStyle = "rgba(47,111,94,0.16)";
+      vctx.fill();
+      vctx.strokeStyle = "rgba(255,255,255,0.95)"; vctx.lineWidth = 5; vctx.stroke();
+      vctx.strokeStyle = ACCENT; vctx.lineWidth = 2.5; vctx.stroke();
+    } else {
+      vctx.strokeStyle = "rgba(0,0,0,0.45)"; vctx.lineWidth = 3; vctx.stroke();
+      vctx.strokeStyle = "rgba(255,255,255,0.95)"; vctx.lineWidth = 1.2; vctx.stroke();
+    }
+  });
+  vctx.restore();
+  // 번호 표시 (영역 위쪽 모서리, 자리가 없으면 안쪽)
+  state.ops.forEach((op, i) => {
+    const [bx1, by1] = opBBox(op);
+    const x = ox + bx1 * z;
+    let y = oy + by1 * z - 20;
+    if (y < 2) y = oy + by1 * z + 2;
+    drawBadge(i + 1, x, y, i === state.selected ? "selected" : (i === hover ? "hover" : "normal"));
+  });
 }
 
 function drawSelection() {
@@ -728,12 +798,16 @@ function drawSelection() {
   const z = state.zoom;
   const x1 = ox + bx1 * z, y1 = oy + by1 * z, x2 = ox + bx2 * z, y2 = oy + by2 * z;
   vctx.save();
-  vctx.strokeStyle = ACCENT;
-  vctx.lineWidth = 2;
-  vctx.setLineDash([5, 4]);
+  // 흰 바탕선을 먼저 깔아 다른 얇은 테두리보다 확실히 눈에 띄게 합니다.
   vctx.beginPath();
   if (op.type === "ellipse") ellipsePathOn(vctx, x1, y1, x2, y2);
   else vctx.rect(x1, y1, x2 - x1, y2 - y1);
+  vctx.strokeStyle = "rgba(255,255,255,0.95)";
+  vctx.lineWidth = 5;
+  vctx.stroke();
+  vctx.strokeStyle = ACCENT;
+  vctx.lineWidth = 2.5;
+  vctx.setLineDash([5, 4]);
   vctx.stroke();
   vctx.setLineDash([]);
   vctx.fillStyle = "#fff";
@@ -917,7 +991,9 @@ view.addEventListener("pointermove", (e) => {
     redraw();
   } else if (state.tool === "select") {
     const p2 = toImg(e.clientX, e.clientY, false);
-    const [, mode] = hitTest(p2);
+    const [hidx, mode] = hitTest(p2);
+    const nh = state.showOutlines ? hidx : -1;
+    if (nh !== state.hover) { state.hover = nh; redraw(); }   // 바뀔 때만 다시 그림
     const canPan = state.displayRect &&
       (state.displayRect.w > wrap.clientWidth || state.displayRect.h > wrap.clientHeight);
     view.style.cursor = mode === "move" ? "grab" : mode ? "nwse-resize" : (canPan ? "grab" : "pointer");
@@ -958,6 +1034,25 @@ window.addEventListener("pointerup", (e) => {
     redraw();
   }
 });
+
+view.addEventListener("pointerleave", () => {
+  if (state.hover !== -1) { state.hover = -1; redraw(); }
+});
+
+// 영역 표시 켜기/끄기 (상단 버튼 또는 H 키)
+const outlineBtn = document.getElementById("outlineBtn");
+function setOutlines(on, save) {
+  state.showOutlines = !!on;
+  state.hover = -1;
+  if (outlineBtn) {
+    outlineBtn.classList.toggle("on", state.showOutlines);
+    outlineBtn.setAttribute("aria-pressed", String(state.showOutlines));
+  }
+  if (save) { try { localStorage.setItem("pbe.showOutlines", state.showOutlines ? "1" : "0"); } catch (_) {} }
+  redraw();
+}
+if (outlineBtn) outlineBtn.onclick = () => setOutlines(!state.showOutlines, true);
+try { if (localStorage.getItem("pbe.showOutlines") === "0") state.showOutlines = false; } catch (_) {}
 
 view.addEventListener("dblclick", () => { if (state.tool === "free") finishFree(); });
 // 오른쪽 버튼으로 실제로 드래그(화면 이동)했을 때만 뒤이어 뜨는 메뉴를 막고,
@@ -1576,6 +1671,7 @@ window.addEventListener("keydown", (e) => {
     else if (writeOpMarker()) e.preventDefault();   // 표식 복사 성공 → 기본 복사는 불필요
     else markOpCopy();                              // 실패 시에만 기본 복사 + copy 이벤트로 표식 기록
   }
+  else if (!ctrl && !e.altKey && e.key.toLowerCase() === "h") { setOutlines(!state.showOutlines, true); }
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
   else if (e.key === "Escape") { cancelCurrent(); }
@@ -1590,6 +1686,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ── 시작 ─────────────────────────────────────────────────────────
+setOutlines(state.showOutlines, false);
 setTool("rect");
 setEffect("blur");
 updateStatus();
