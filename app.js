@@ -580,13 +580,24 @@ window.addEventListener("copy", (e) => {
 function markOpCopy() {
   pendingOpCopy = true;
   opCopyEventSeen = false;
-  // 브라우저가 copy 이벤트를 보내지 않는 경우를 위한 보조 수단
-  setTimeout(() => {
-    pendingOpCopy = false;
-    if (!opCopyEventSeen && navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(OP_CLIP_MARK).catch(() => {});
-    }
-  }, 120);
+}
+// 클립보드 API(navigator.clipboard)를 쓰면 크롬이 "클립보드 확인" 권한 창을 띄우므로,
+// 보이지 않는 임시 입력칸에 표식 글자를 넣고 브라우저의 기본 복사 명령으로 복사합니다.
+// (키보드를 누른 바로 그 순간에 실행되므로 권한 창이 뜨지 않습니다.)
+function writeOpMarker() {
+  const prev = document.activeElement;
+  const ta = document.createElement("textarea");
+  ta.value = OP_CLIP_MARK;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+  ta.remove();
+  if (prev && prev.focus) { try { prev.focus({ preventScroll: true }); } catch (_) {} }
+  return ok;
 }
 
 async function loadFile(file) {
@@ -1559,11 +1570,11 @@ window.addEventListener("keydown", (e) => {
   else if (ctrl && e.key.toLowerCase() === "s") { e.preventDefault(); openSaveDialog(); }
   else if (ctrl && e.key.toLowerCase() === "o") { e.preventDefault(); fileInput.click(); }
   else if (ctrl && e.key.toLowerCase() === "c") {
-    // preventDefault 를 하지 않아야 브라우저의 copy 이벤트가 발생해 클립보드가 갱신됩니다.
     const hadSel = state.selected >= 0 && state.selected < state.ops.length;
     copySelected();
-    if (hadSel) markOpCopy();
-    else e.preventDefault();
+    if (!hadSel) e.preventDefault();
+    else if (writeOpMarker()) e.preventDefault();   // 표식 복사 성공 → 기본 복사는 불필요
+    else markOpCopy();                              // 실패 시에만 기본 복사 + copy 이벤트로 표식 기록
   }
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
