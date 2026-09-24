@@ -990,8 +990,8 @@ function openSaveDialog() {
       <label class="radio"><input type="radio" name="szmode" value="original"> 원본 크기 그대로  (${w} × ${h}px)</label>
       <label class="radio"><input type="radio" name="szmode" value="custom" checked> 크기 지정</label>
       <div class="size-row">
-        <span>가로</span><input type="number" id="szW" value="${w}" min="1" max="${w}" disabled>
-        <span>세로</span><input type="number" id="szH" value="${h}" min="1" max="${h}" disabled>
+        <span>가로</span><input type="number" id="szW" value="${w}" min="1" max="${w}">
+        <span>세로</span><input type="number" id="szH" value="${h}" min="1" max="${h}">
         <span style="color:var(--muted);font-size:11px;">px</span>
       </div>
       <p class="tip" id="szTip">한쪽 값만 입력해도 비율에 맞춰 나머지가 채워집니다. 원본(${w}×${h}px)보다 크게는 저장할 수 없습니다 — 더 키우면 화질만 나빠지기 때문입니다.</p>
