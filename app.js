@@ -45,6 +45,17 @@ const state = {
   displayRect: null,
 };
 
+// ── 여러 장(일괄 처리) 상태 ──────────────────────────────────────
+// docs[i] 는 사진 한 장의 데이터 전체(원본, 가림 영역, 되돌리기 기록, 상태)를 갖고 있습니다.
+// 지금 화면에 보이는 사진의 내용은 위 state 객체(ops/undoStack 등)에 그대로 들어 있고,
+// 다른 사진으로 넘어갈 때 saveCurrentIntoDoc()으로 옮겨 담고 switchToDoc()으로 불러옵니다.
+const batch = {
+  docs: [],
+  current: -1,     // 지금 보고 있는 사진의 docs 안 위치
+  detectRunning: false,
+  detectCancel: false,
+};
+
 // ── 도형 계산 ────────────────────────────────────────────────────
 function opBBox(op) {
   if (op.type === "rect" || op.type === "ellipse") {
@@ -527,17 +538,30 @@ function syncControls() {
   }
 }
 
-// ── 파일 열기 ────────────────────────────────────────────────────
+// ── 파일 열기(여러 장) ──────────────────────────────────────────
 $("openBtn").onclick = () => fileInput.click();
-fileInput.onchange = () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); fileInput.value = ""; };
+fileInput.onchange = () => { addFiles(fileInput.files); fileInput.value = ""; };
 
+let dragDepth = 0;
 for (const ev of ["dragover", "dragenter"]) {
-  window.addEventListener(ev, (e) => { e.preventDefault(); });
+  window.addEventListener(ev, (e) => {
+    e.preventDefault();
+    if (ev === "dragenter" && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) {
+      dragDepth++;
+      wrap.classList.add("drag-over");
+    }
+  });
 }
+window.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) wrap.classList.remove("drag-over");
+});
 window.addEventListener("drop", (e) => {
   e.preventDefault();
-  const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f && f.type.startsWith("image/")) loadFile(f);
+  dragDepth = 0;
+  wrap.classList.remove("drag-over");
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) addFiles(files);
 });
 
 // 내부에서 복사한 가림 영역임을 알리는 표식 글자(시스템 클립보드에 기록됨)
@@ -564,12 +588,12 @@ window.addEventListener("paste", (e) => {
     return;
   }
 
-  // 1) 외부에서 복사한 이미지 → 사진으로 불러오기
+  // 1) 외부에서 복사한 이미지 → 목록에 사진으로 추가
   for (const item of items) {
     if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
       e.preventDefault();
       const file = item.getAsFile();
-      if (file) loadFile(file);
+      if (file) addFiles([file]);
       return;
     }
   }
@@ -615,29 +639,315 @@ function writeOpMarker() {
   return ok;
 }
 
-async function loadFile(file) {
-  try {
-    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-    const c = document.createElement("canvas");
-    c.width = bitmap.width; c.height = bitmap.height;
-    c.getContext("2d").drawImage(bitmap, 0, 0);
-    state.source = c;
-    state.rotation = 0;
-    deriveSrc();
-    state.ops = [];
-    state.selected = -1;
-    state.undoStack = [];
-    state.redoStack = [];
-    state.pan = { x: 0, y: 0 };
-    state.filenameStem = file.name.replace(/\.[^.]+$/, "");
-    $("fname").textContent = file.name;
-    placeholder.classList.add("hidden");
-    fitView();
-    updateStatus();
-  } catch (e) {
-    alert("사진을 열 수 없습니다.\n" + e);
+// ── 여러 장(일괄 처리) ───────────────────────────────────────────
+// 사진 하나를 처음 열 때: 회전 정보를 반영한 원본 캔버스와, 목록에 쓸 작은 미리보기를 만듭니다.
+// 전체 화질 캔버스(source)는 필요할 때(화면에 보일 때·자동 감지·저장) 다시 만들고,
+// 안 보고 있을 때는 비워서(unloadFarDocs) 사진을 여러 장 열어도 기기가 버벅이지 않게 합니다.
+async function makeDoc(file) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const maxThumb = 220;
+  const scale = Math.min(1, maxThumb / Math.max(bitmap.width, bitmap.height));
+  const thumb = document.createElement("canvas");
+  thumb.width = Math.max(1, Math.round(bitmap.width * scale));
+  thumb.height = Math.max(1, Math.round(bitmap.height * scale));
+  thumb.getContext("2d").drawImage(bitmap, 0, 0, thumb.width, thumb.height);
+  const width = bitmap.width, height = bitmap.height;
+  if (bitmap.close) bitmap.close();
+  return {
+    file,
+    name: file.name || "사진",
+    stem: (file.name || "사진").replace(/\.[^.]+$/, ""),
+    width, height,           // 회전 전 원본 크기 (저장 크기 계산용)
+    thumbCanvas: thumb,
+    source: null,            // 회전 적용 전 원본 캔버스(필요할 때 다시 만듦)
+    rotation: 0,
+    ops: [],
+    undoStack: [],
+    redoStack: [],
+    status: "pending",       // pending(대기 중) → detecting(감지 중) → detected(자동 감지 완료) → reviewed(확인함)
+  };
+}
+
+// doc.source가 비어 있으면(멀리 있어서 내려놓은 경우) 파일에서 다시 만듭니다.
+async function ensureDocSource(doc) {
+  if (doc.source) return doc.source;
+  const bitmap = await createImageBitmap(doc.file, { imageOrientation: "from-image" });
+  const c = document.createElement("canvas");
+  c.width = bitmap.width; c.height = bitmap.height;
+  c.getContext("2d").drawImage(bitmap, 0, 0);
+  if (bitmap.close) bitmap.close();
+  doc.source = c;
+  return c;
+}
+
+// deriveSrc()와 같은 계산을, 화면에 지금 띄운 사진이 아닌 다른 사진에 대해서도 쓸 수 있게 뽑아 둔 함수입니다.
+function rotatedCanvasFor(source, rotation) {
+  let c = source;
+  const steps = (((rotation / 90) % 4) + 4) % 4;
+  for (let i = 0; i < steps; i++) c = rotateCanvas90CW(c);
+  return c;
+}
+
+// 지금 화면(state)의 편집 내용을 현재 문서(batch.docs[batch.current])에 옮겨 담습니다.
+// ops/undoStack/redoStack은 대부분 같은 배열을 그대로 참조하고 있어 손댈 필요가 없지만,
+// 실행취소(restore)가 배열을 통째로 새로 만드는 경우가 있어 매번 다시 연결해 둡니다.
+function saveCurrentIntoDoc() {
+  if (batch.current < 0) return;
+  const doc = batch.docs[batch.current];
+  if (!doc) return;
+  doc.ops = state.ops;
+  doc.rotation = state.rotation;
+  doc.undoStack = state.undoStack;
+  doc.redoStack = state.redoStack;
+  if (doc.ops.length) {
+    if (doc.status === "pending") doc.status = "detected";
+  } else if (doc.status !== "reviewed") {
+    doc.status = "pending";
   }
 }
+
+// 화면에서 멀리 있는 사진(현재±1을 벗어난 사진)의 원본 캔버스는 비워서 메모리를 아낍니다.
+// 가림 영역(ops) 등 정보는 그대로 남아 있어서, 나중에 다시 보면 파일에서 다시 불러올 뿐입니다.
+function unloadFarDocs(centerIdx) {
+  batch.docs.forEach((doc, i) => {
+    if (i !== centerIdx && Math.abs(i - centerIdx) > 1) doc.source = null;
+  });
+}
+
+async function switchToDoc(index) {
+  if (index < 0 || index >= batch.docs.length) return;
+  saveCurrentIntoDoc();
+  const doc = batch.docs[index];
+  batch.current = index;
+  let source;
+  try {
+    source = await ensureDocSource(doc);
+  } catch (e) {
+    toast(`"${doc.name}" 사진을 열 수 없습니다.`);
+    return;
+  }
+  state.source = source;
+  state.rotation = doc.rotation;
+  deriveSrc();
+  state.ops = doc.ops;
+  state.undoStack = doc.undoStack;
+  state.redoStack = doc.redoStack;
+  state.selected = -1;
+  state.hover = -1;
+  state.filenameStem = doc.stem;
+  $("fname").textContent = doc.name;
+  placeholder.classList.add("hidden");
+  fitView();
+  updateStatus();
+  renderFilmstrip();
+  unloadFarDocs(index);
+}
+
+function resetToEmpty() {
+  state.source = null; state.src = null; state.ops = []; state.selected = -1; state.hover = -1;
+  state.undoStack = []; state.redoStack = []; state.rotation = 0; state.filenameStem = "사진";
+  $("fname").textContent = "";
+  placeholder.classList.remove("hidden");
+  redraw();
+  updateStatus();
+}
+
+function updateBatchVisibility() {
+  const multi = batch.docs.length > 1;
+  $("filmstrip").classList.toggle("hidden", !multi);
+  $("batchSaveBtn").classList.toggle("hidden", !multi);
+  $("batchSaveNote").classList.toggle("hidden", !multi);
+  if (multi) $("batchSaveBtn").textContent = `전체 저장 (${batch.docs.length}장)`;
+}
+
+function statusLabel(s) {
+  return { pending: "대기 중", detecting: "감지 중", detected: "자동 감지 완료", reviewed: "확인함", error: "오류" }[s] || s;
+}
+
+function renderFilmstrip() {
+  const list = $("filmstripList");
+  list.innerHTML = "";
+  batch.docs.forEach((doc, i) => {
+    const item = document.createElement("div");
+    item.className = "filmitem" + (i === batch.current ? " active" : "");
+
+    const img = document.createElement("img");
+    img.className = "thumb";
+    img.src = doc.thumbCanvas.toDataURL("image/jpeg", 0.72);
+    img.alt = doc.name;
+    item.appendChild(img);
+
+    const badge = document.createElement("span");
+    badge.className = "badge " + doc.status;
+    badge.innerHTML = `<span class="dot"></span>${statusLabel(doc.status)}`;
+    badge.title = doc.status === "reviewed" ? "눌러서 확인 표시 해제" : "눌러서 확인함으로 표시";
+    badge.onclick = (e) => {
+      e.stopPropagation();
+      if (!doc.ops.length && doc.status !== "reviewed") { toast("가림 영역이 없는 사진입니다."); return; }
+      doc.status = doc.status === "reviewed" ? (doc.ops.length ? "detected" : "pending") : "reviewed";
+      renderFilmstrip();
+    };
+    item.appendChild(badge);
+
+    const rm = document.createElement("button");
+    rm.type = "button"; rm.className = "removeBtn"; rm.title = "목록에서 닫기"; rm.textContent = "×";
+    rm.onclick = (e) => { e.stopPropagation(); removeDoc(i); };
+    item.appendChild(rm);
+
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = doc.name;
+    item.appendChild(name);
+
+    item.onclick = () => { if (i !== batch.current) switchToDoc(i); };
+    list.appendChild(item);
+  });
+  $("filmstripCount").textContent = batch.docs.length ? `${batch.current + 1} / ${batch.docs.length}장` : "";
+  $("filmstripAutoBtn").disabled = batch.detectRunning;
+  $("filmstripPrevBtn").disabled = batch.current <= 0;
+  $("filmstripNextBtn").disabled = batch.current < 0 || batch.current >= batch.docs.length - 1;
+  updateBatchVisibility();
+}
+
+function removeDoc(idx) {
+  const doc = batch.docs[idx];
+  if (!doc) return;
+  const wasCurrent = idx === batch.current;
+  batch.docs.splice(idx, 1);
+  if (!batch.docs.length) {
+    batch.current = -1;
+    resetToEmpty();
+  } else if (wasCurrent) {
+    batch.current = -1; // 이미 지운 사진에 되돌려 쓰지 않도록 먼저 비웁니다.
+    switchToDoc(Math.min(idx, batch.docs.length - 1));
+  } else if (idx < batch.current) {
+    batch.current -= 1;
+  }
+  renderFilmstrip();
+}
+
+// 사진들을 추가합니다. 화면이 비어 있었다면 첫 장을 바로 엽니다.
+async function addFiles(fileList) {
+  const files = Array.from(fileList).filter((f) => f.type && f.type.startsWith("image/"));
+  if (!files.length) return;
+  if (files.length > 60) toast(`${files.length}장을 불러오는 중입니다. 사진이 많아 시간이 걸릴 수 있어요…`);
+  const firstNewIndex = batch.docs.length;
+  for (const file of files) {
+    try {
+      const doc = await makeDoc(file);
+      batch.docs.push(doc);
+      renderFilmstrip();
+    } catch (e) {
+      console.error("사진을 불러올 수 없습니다:", file.name, e);
+      toast(`"${file.name}" 사진을 열 수 없습니다.`);
+    }
+    // 화면이 계속 반응하도록 사진 한 장을 불러올 때마다 잠깐 양보합니다.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (batch.current === -1 && batch.docs.length) {
+    await switchToDoc(firstNewIndex);
+  } else {
+    renderFilmstrip();
+  }
+}
+
+$("filmstripPrevBtn").onclick = () => { if (batch.current > 0) switchToDoc(batch.current - 1); };
+$("filmstripNextBtn").onclick = () => { if (batch.current < batch.docs.length - 1) switchToDoc(batch.current + 1); };
+$("filmstripClearBtn").onclick = () => {
+  if (!batch.docs.length) return;
+  if (!confirm(`목록에 있는 사진 ${batch.docs.length}장을 모두 닫을까요? 저장하지 않은 편집 내용은 사라집니다.`)) return;
+  batch.docs = [];
+  batch.current = -1;
+  resetToEmpty();
+  renderFilmstrip();
+};
+
+// 사진 한 장의 얼굴 자동 감지. 지금 보고 있는 사진이면 화면에 바로 반영하고 되돌리기 기록도 남기며,
+// 다른(화면 밖) 사진이면 그 사진의 정보에만 결과를 적어 두고, 다음에 열어 보면 그대로 보입니다.
+async function detectOneDoc(idx, detector) {
+  const doc = batch.docs[idx];
+  if (!doc || doc.status !== "pending") return;
+  doc.status = "detecting";
+  renderFilmstrip();
+  try {
+    const source = await ensureDocSource(doc);
+    const working = rotatedCanvasFor(source, doc.rotation);
+    const dets = detectFacesMulti(detector, working);
+    const W = working.width, H = working.height;
+    const newOps = dets.map(([x, y, w, h]) => {
+      const padx = w * 0.16, padyT = h * 0.26, padyB = h * 0.14;
+      return {
+        type: "ellipse",
+        box: [Math.max(0, x - padx), Math.max(0, y - padyT), Math.min(W, x + w + padx), Math.min(H, y + h + padyB)],
+        effect: state.effect, strength: state.strength,
+      };
+    });
+    if (idx === batch.current) {
+      if (newOps.length) {
+        const before = snapshot();
+        state.ops.push(...newOps);
+        state.selected = state.ops.length - 1;
+        commit(before);
+        redraw();
+      }
+      doc.ops = state.ops; doc.undoStack = state.undoStack; doc.redoStack = state.redoStack;
+    } else {
+      if (newOps.length) {
+        doc.undoStack.push({ ops: [], rotation: doc.rotation, selected: -1 });
+        doc.ops.push(...newOps);
+      }
+      if (Math.abs(idx - batch.current) > 1) doc.source = null; // 메모리 절약
+    }
+    doc.status = doc.ops.length ? "detected" : "pending";
+  } catch (e) {
+    console.error("자동 감지 오류:", doc.name, e);
+    doc.status = "error";
+  }
+  renderFilmstrip();
+}
+
+// 목록에 있는(아직 처리하지 않은) 사진들을 5장씩 순서대로 자동 감지합니다.
+// 한 번에 다 돌리면 브라우저가 잠깐 멈춘 것처럼 보일 수 있어, 묶음 사이마다 화면에 숨 돌릴 틈을 줍니다.
+async function batchAutoDetect() {
+  if (batch.detectRunning) return;
+  if (!batch.docs.length) { toast("사진을 먼저 열어 주세요."); return; }
+  const ready = await ensureOpenCVReady(false);
+  if (!ready) { toast("얼굴 인식 기능을 불러오지 못했습니다. 왼쪽 상태 표시를 확인해 주세요."); return; }
+  const targets = batch.docs.map((d, i) => i).filter((i) => batch.docs[i].status === "pending");
+  if (!targets.length) { toast("자동 감지할 사진이 없습니다. (이미 모두 처리됨)"); return; }
+
+  batch.detectRunning = true;
+  batch.detectCancel = false;
+  $("filmstripAutoBtn").classList.add("hidden");
+  $("filmstripStopBtn").classList.remove("hidden");
+  $("filmstripProgress").style.display = "block";
+  renderFilmstrip();
+
+  const detector = await getFaceDetector();
+  const CHUNK = 5;
+  let done = 0;
+  for (let i = 0; i < targets.length; i += CHUNK) {
+    if (batch.detectCancel) break;
+    const chunk = targets.slice(i, i + CHUNK);
+    for (const idx of chunk) {
+      if (batch.detectCancel) break;
+      await detectOneDoc(idx, detector);
+      done++;
+      $("filmstripProgress").textContent = `자동 감지 중… ${done}/${targets.length}장`;
+    }
+    await new Promise((r) => setTimeout(r, 0)); // 브라우저가 화면을 그리고 클릭에 반응할 틈을 줍니다
+  }
+  batch.detectRunning = false;
+  $("filmstripAutoBtn").classList.remove("hidden");
+  $("filmstripStopBtn").classList.add("hidden");
+  $("filmstripProgress").style.display = "none";
+  renderFilmstrip();
+  toast(batch.detectCancel
+    ? `자동 감지를 멈췄습니다 (${done}/${targets.length}장 처리함)`
+    : `자동 감지를 마쳤습니다 (${done}장 처리)`);
+}
+$("filmstripAutoBtn").onclick = batchAutoDetect;
+$("filmstripStopBtn").onclick = () => { batch.detectCancel = true; };
 
 // ── 보기 (줌/이동/맞춤) ──────────────────────────────────────────
 function fitView() {
@@ -1333,6 +1643,154 @@ function doSave(targetSize, format = "png", quality = 0.92) {
   }, mime, format === "png" ? undefined : quality);
 }
 $("saveBtn").onclick = openSaveDialog;
+
+// ── 전체 저장(여러 장을 한 번에) ─────────────────────────────────
+function buildDocOutputCanvas(source, doc, targetSize) {
+  // 기존 render()/buildOutputCanvas()를 그대로 재사용하기 위해, 잠깐 전역 상태를
+  // 이 문서 내용으로 바꿔서 계산한 뒤 곧바로(비동기 대기 없이) 원래대로 되돌립니다.
+  const savedSource = state.source, savedRotation = state.rotation, savedSrc = state.src, savedOps = state.ops;
+  state.source = source; state.rotation = doc.rotation; deriveSrc(); state.ops = doc.ops;
+  const out = buildOutputCanvas(targetSize);
+  state.source = savedSource; state.rotation = savedRotation; state.src = savedSrc; state.ops = savedOps;
+  return out;
+}
+
+// 사진마다 가로세로 비율이 달라서, 저장 크기는 "긴 변 길이"로만 지정합니다.
+function targetSizeForDoc(doc, longEdge) {
+  if (!longEdge) return null;
+  const swapped = ((((doc.rotation / 90) % 4) + 4) % 4) % 2 === 1;
+  const W = swapped ? doc.height : doc.width;
+  const H = swapped ? doc.width : doc.height;
+  const scale = Math.min(1, longEdge / Math.max(W, H));
+  if (scale >= 1) return null; // 원본보다 크게 늘리지 않음
+  return [Math.max(1, Math.round(W * scale)), Math.max(1, Math.round(H * scale))];
+}
+
+function uniqueFileName(usedNames, stem, ext) {
+  let name = `${stem}.${ext}`, n = 2;
+  while (usedNames.has(name)) { name = `${stem}(${n}).${ext}`; n++; }
+  usedNames.add(name);
+  return name;
+}
+
+function openBatchSaveDialog() {
+  if (!batch.docs.length) { toast("사진을 먼저 열어 주세요."); return; }
+  const webpOK = supportsWebP();
+  let savedMode = "zip";
+  try { savedMode = localStorage.getItem("pbe.batchSaveMode") || "zip"; } catch (_) { /* 무시 */ }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <h3>전체 저장 (${batch.docs.length}장)</h3>
+      <label class="radio"><input type="radio" name="bzSize" value="original" checked> 원본 크기 그대로</label>
+      <label class="radio"><input type="radio" name="bzSize" value="custom"> 긴 변 길이 지정</label>
+      <div class="size-row" id="bzLongRow" style="display:none;">
+        <span>긴 변</span><input type="number" id="bzLong" value="2000" min="100">
+        <span style="color:var(--muted);font-size:11px;">px</span>
+      </div>
+      <p class="tip">사진마다 가로세로 비율이 달라서, 긴 쪽 길이를 기준으로 맞춥니다. 원본보다 크게 늘리지는 않습니다.</p>
+
+      <h3 style="margin-top:4px;">파일 형식</h3>
+      <label class="radio"><input type="radio" name="bzFmt" value="webp" ${webpOK ? "" : "disabled"}>
+        WebP — 용량을 크게 줄이면서 화질 차이는 거의 없음${webpOK ? "" : " · 이 브라우저에서는 지원하지 않음"}</label>
+      <label class="radio"><input type="radio" name="bzFmt" value="jpeg" checked> JPG (JPEG) — 문서·한글 파일에 넣을 때 호환성이 좋음 (추천)</label>
+      <label class="radio"><input type="radio" name="bzFmt" value="png"> PNG — 무손실이라 용량이 가장 큼</label>
+      <div class="size-row" id="bzQualityRow">
+        <span>압축률</span>
+        <input type="range" id="bzQuality" min="40" max="100" value="92" style="flex:1;">
+        <span id="bzQualityLabel" style="width:30px;text-align:right;font-size:12px;">92</span>
+      </div>
+
+      <h3 style="margin-top:4px;">저장 방식</h3>
+      <label class="radio"><input type="radio" name="bzMode" value="zip" ${savedMode === "zip" ? "checked" : ""}> zip 파일 하나로 모아서 저장</label>
+      <label class="radio"><input type="radio" name="bzMode" value="individual" ${savedMode === "individual" ? "checked" : ""}> 한 장씩 따로 저장</label>
+      <p class="tip">‘한 장씩 따로’를 고르면 브라우저가 여러 파일을 내려받아도 되는지 한 번 물어볼 수 있습니다.</p>
+
+      <div class="btns">
+        <button id="bzCancel">취소</button>
+        <button id="bzOk" class="btn-primary">저장 시작</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+
+  const longRow = backdrop.querySelector("#bzLongRow");
+  const qualityRow = backdrop.querySelector("#bzQualityRow");
+  backdrop.querySelectorAll('input[name="bzSize"]').forEach((r) => r.addEventListener("change", () => {
+    longRow.style.display = backdrop.querySelector('input[name="bzSize"]:checked').value === "custom" ? "flex" : "none";
+  }));
+  backdrop.querySelectorAll('input[name="bzFmt"]').forEach((r) => r.addEventListener("change", () => {
+    qualityRow.style.display = backdrop.querySelector('input[name="bzFmt"]:checked').value === "png" ? "none" : "flex";
+  }));
+  const bzQuality = backdrop.querySelector("#bzQuality");
+  bzQuality.addEventListener("input", () => { backdrop.querySelector("#bzQualityLabel").textContent = bzQuality.value; });
+
+  const closeDialog = () => { window.removeEventListener("keydown", onEsc, true); backdrop.remove(); };
+  const onEsc = (e) => { if (e.key === "Escape") closeDialog(); };
+  window.addEventListener("keydown", onEsc, true);
+  backdrop.querySelector("#bzCancel").onclick = closeDialog;
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeDialog(); });
+
+  backdrop.querySelector("#bzOk").onclick = () => {
+    const sizeMode = backdrop.querySelector('input[name="bzSize"]:checked').value;
+    const longEdge = sizeMode === "custom"
+      ? Math.max(100, Math.round(parseFloat(backdrop.querySelector("#bzLong").value) || 2000))
+      : null;
+    const format = backdrop.querySelector('input[name="bzFmt"]:checked').value;
+    const quality = parseInt(bzQuality.value, 10) / 100;
+    const mode = backdrop.querySelector('input[name="bzMode"]:checked').value;
+    try { localStorage.setItem("pbe.batchSaveMode", mode); } catch (_) { /* 무시 */ }
+    closeDialog();
+    batchSave(longEdge, format, quality, mode);
+  };
+}
+
+async function batchSave(longEdge, format, quality, mode) {
+  if (!batch.docs.length) return;
+  saveCurrentIntoDoc(); // 지금 보고 있는 사진의 최신 편집 내용부터 반영합니다.
+  const ext = format === "jpeg" ? "jpg" : format;
+  const mime = format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+  const usedNames = new Set();
+  const total = batch.docs.length;
+  toast(`사진 ${total}장을 만드는 중입니다…`);
+
+  const items = [];
+  for (let i = 0; i < total; i++) {
+    const doc = batch.docs[i];
+    try {
+      const source = await ensureDocSource(doc);
+      let canvas = buildDocOutputCanvas(source, doc, targetSizeForDoc(doc, longEdge));
+      if (format === "jpeg") canvas = flattenOnWhite(canvas);
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("encode failed"))), mime, format === "png" ? undefined : quality);
+      });
+      items.push({ name: uniqueFileName(usedNames, doc.stem, ext), blob });
+      if (Math.abs(i - batch.current) > 1) doc.source = null; // 메모리 절약
+    } catch (e) {
+      console.error("저장 중 문제:", doc.name, e);
+      toast(`"${doc.name}" 사진을 처리하는 중 문제가 생겨 건너뛰었습니다.`);
+    }
+    if (i % 4 === 3) await new Promise((r) => setTimeout(r, 0)); // 화면이 계속 반응하도록 잠깐씩 양보
+  }
+  if (!items.length) { toast("저장할 사진이 없습니다."); return; }
+
+  if (mode === "zip") {
+    toast("zip 파일로 묶는 중입니다…");
+    const zip = new window.JSZip();
+    for (const it of items) zip.file(it.name, it.blob);
+    const zipBlob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+    saveBlob(zipBlob, `사진_가림_${items.length}장.zip`);
+    toast(`zip 파일로 ${items.length}장을 저장했습니다.`);
+  } else {
+    for (const it of items) {
+      saveBlob(it.blob, it.name);
+      await new Promise((r) => setTimeout(r, 250)); // 다운로드가 한꺼번에 몰리지 않도록 간격을 둡니다.
+    }
+    toast(`${items.length}장을 각각 저장했습니다.`);
+  }
+}
+$("batchSaveBtn").onclick = openBatchSaveDialog;
 
 // ── 얼굴 자동 찾기 (OpenCV.js — 데스크톱 버전과 동일한 YuNet/Haar) ──
 // 데스크톱 프로그램이 쓰는 것과 똑같은, 검증된 OpenCV 알고리즘을
