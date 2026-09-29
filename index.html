@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>사진 가림 편집기</title>
+<title>PhotoSafe - 사진 개인정보 보호 편집기</title>
 <style>
 :root{--bg:#eef1ee;--panel:#fff;--line:#dfe5df;--soft:#edf0ed;--ink:#26322d;--muted:#7b8680;--accent:#2f7664;--accent-dark:#275f51;--accent-s:#e2efe9}
 *{box-sizing:border-box}
@@ -120,7 +120,7 @@ main{display:flex;flex-direction:column;padding:8px;gap:8px;min-height:calc(100v
 <body>
 <div id="app">
   <header>
-    <h1>사진 가림 편집기</h1>
+    <h1>PhotoSafe</h1>
     <span class="fname" id="fname"></span>
     <div class="spacer"></div>
     <button type="button" id="outlineBtn" class="toggle-btn on" aria-pressed="true" title="가림 영역 표시 켜기/끄기 (H)">▢ 영역 표시</button>
@@ -193,7 +193,7 @@ main{display:flex;flex-direction:column;padding:8px;gap:8px;min-height:calc(100v
             <button id="filmstripNextBtn" title="다음 사진 (PageDown)">다음 ›</button>
           </div>
           <div class="row">
-            <button id="filmstripAutoBtn">자동 감지(전체)</button>
+            <button id="filmstripAutoBtn">얼굴 자동 감지(전체)</button>
             <button id="filmstripStopBtn" class="hidden">중지</button>
           </div>
           <button id="filmstripClearBtn">모두 지우기</button>
