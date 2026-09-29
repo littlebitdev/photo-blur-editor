@@ -737,9 +737,9 @@ async function switchToDoc(index) {
   state.filenameStem = doc.stem;
   $("fname").textContent = doc.name;
   placeholder.classList.add("hidden");
+  renderFilmstrip();   // 목록 표시 여부(캔버스 높이 변화)를 먼저 반영한 뒤에 화면 맞춤을 계산합니다.
   fitView();
   updateStatus();
-  renderFilmstrip();
   unloadFarDocs(index);
 }
 
@@ -754,11 +754,21 @@ function resetToEmpty() {
 
 function updateBatchVisibility() {
   const multi = batch.docs.length > 1;
+  const wasHidden = $("filmstrip").classList.contains("hidden");
   $("filmstrip").classList.toggle("hidden", !multi);
   $("batchSaveBtn").classList.toggle("hidden", !multi);
   $("batchSaveNote").classList.toggle("hidden", !multi);
   if (multi) $("batchSaveBtn").textContent = `전체 저장 (${batch.docs.length}장)`;
+  // 목록이 화면 아래쪽에서 나타나거나 사라지면 캔버스 높이가 바뀌므로 다시 맞춥니다.
+  if (state.src && wasHidden !== $("filmstrip").classList.contains("hidden")) fitView();
 }
+
+// 목록을 접었다 펼쳤다 — 접으면 캔버스가 그만큼 넓어지므로 역시 다시 맞춥니다.
+$("filmstripToggleBtn").onclick = () => {
+  const collapsed = $("filmstrip").classList.toggle("collapsed");
+  $("filmstripToggleBtn").textContent = collapsed ? "▴ 펼치기" : "▾ 접기";
+  if (state.src) fitView();
+};
 
 function statusLabel(s) {
   return { pending: "대기 중", detecting: "감지 중", detected: "자동 감지 완료", reviewed: "확인함", error: "오류" }[s] || s;
@@ -801,6 +811,7 @@ function renderFilmstrip() {
 
     item.onclick = () => { if (i !== batch.current) switchToDoc(i); };
     list.appendChild(item);
+    if (i === batch.current) item.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
   $("filmstripCount").textContent = batch.docs.length ? `${batch.current + 1} / ${batch.docs.length}장` : "";
   $("filmstripAutoBtn").disabled = batch.detectRunning;
@@ -1765,7 +1776,8 @@ async function batchSave(longEdge, format, quality, mode) {
       const blob = await new Promise((resolve, reject) => {
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("encode failed"))), mime, format === "png" ? undefined : quality);
       });
-      items.push({ name: uniqueFileName(usedNames, doc.stem, ext), blob });
+      // 단일 저장과 같은 표시("_가림")를 붙여, 원본과 구분되게 합니다.
+      items.push({ name: uniqueFileName(usedNames, `${doc.stem}_가림`, ext), blob });
       if (Math.abs(i - batch.current) > 1) doc.source = null; // 메모리 절약
     } catch (e) {
       console.error("저장 중 문제:", doc.name, e);
@@ -2216,6 +2228,11 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Delete" || e.key === "Backspace") { if (state.selected >= 0) { e.preventDefault(); deleteSelected(); } }
   else if (e.key === "Enter") { finishFree(); }
   else if (e.key === "Escape") { cancelCurrent(); }
+  else if ((e.key === "PageUp" || e.key === "PageDown") && batch.docs.length > 1) {
+    e.preventDefault();
+    if (e.key === "PageUp" && batch.current > 0) switchToDoc(batch.current - 1);
+    else if (e.key === "PageDown" && batch.current < batch.docs.length - 1) switchToDoc(batch.current + 1);
+  }
   else if (e.key.startsWith("Arrow") && state.tool === "select") {
     e.preventDefault();
     const step = 10;
